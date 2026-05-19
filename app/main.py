@@ -67,7 +67,7 @@ class JsonFormatter(logging.Formatter):
                 payload[key] = value
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)
-        return json.dumps(payload, default=str)
+        return json.dumps(payload, default=str, ensure_ascii=False)
 
 
 def configure_logging(settings: Settings) -> None:
