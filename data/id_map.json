@@ -1,0 +1,17 @@
+[
+  {
+    "type": "memory",
+    "chunk_id": 1,
+    "memory_id": 1
+  },
+  {
+    "type": "memory",
+    "chunk_id": 2,
+    "memory_id": 2
+  },
+  {
+    "type": "memory",
+    "chunk_id": 3,
+    "memory_id": 3
+  }
+]
