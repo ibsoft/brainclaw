@@ -145,8 +145,12 @@ def update_memory(request: MemoryUpdateRequest) -> StatusResponse:
 
 
 @app.get("/memory/{id}", response_model=MemoryResponse, dependencies=[Auth])
-def get_memory(id: Annotated[int, Path(gt=0)]) -> dict:
-    return memory_service.get_memory(id)
+def get_memory(
+    id: Annotated[int, Path(gt=0)],
+    agent_id: Annotated[str, Query(min_length=1, max_length=128)],
+    workspace: Annotated[str, Query(min_length=1, max_length=256)],
+) -> dict:
+    return memory_service.get_memory(id, agent_id, workspace)
 
 
 @app.post("/memory/rebuild-index", response_model=StatusResponse, dependencies=[Auth])

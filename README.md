@@ -87,7 +87,7 @@ curl -X POST http://127.0.0.1:8757/memory/search \
 
 ```bash
 curl -H "X-API-Key: $MEMORY_API_KEY" \
-  http://127.0.0.1:8757/memory/1
+  "http://127.0.0.1:8757/memory/1?agent_id=openclaw&workspace=default"
 ```
 
 ### Update Memory

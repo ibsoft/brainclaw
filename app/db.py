@@ -148,6 +148,20 @@ class Database:
                 (memory_id,),
             ).fetchone()
 
+    def get_memory_scoped(self, memory_id: int, agent_id: str, workspace: str) -> Optional[sqlite3.Row]:
+        with self.connect() as conn:
+            return conn.execute(
+                """
+                SELECT m.*,
+                       COUNT(c.id) AS chunk_count
+                FROM memories m
+                LEFT JOIN chunks c ON c.memory_id = m.id AND c.deleted = 0
+                WHERE m.id = ? AND m.agent_id = ? AND m.workspace = ? AND m.deleted = 0
+                GROUP BY m.id
+                """,
+                (memory_id, agent_id, workspace),
+            ).fetchone()
+
     def update_memory(self, memory_id: int, updates: dict[str, Any], chunks: Optional[list[str]]) -> bool:
         now = utc_now()
         with self.connect() as conn:

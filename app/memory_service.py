@@ -106,8 +106,8 @@ class MemoryService:
         )
         return {"ok": True, "id": memory_id, "message": "memory added", "details": {"chunks": len(chunks)}}
 
-    def get_memory(self, memory_id: int) -> dict[str, Any]:
-        row = self.db.get_memory(memory_id)
+    def get_memory(self, memory_id: int, agent_id: str, workspace: str) -> dict[str, Any]:
+        row = self.db.get_memory_scoped(memory_id, agent_id, workspace)
         if row is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="memory not found")
         return row_to_memory(row)
