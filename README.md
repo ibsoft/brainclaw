@@ -1,3 +1,6 @@
+<img width="1536" height="1024" alt="ChatGPT Image May 20, 2026, 02_40_52 PM" src="https://github.com/user-attachments/assets/5a0d99c8-cfae-4e4e-9420-5a82d62b0d77" />
+
+
 # BrainClaw
 
 BrainClaw is a local long-term semantic memory service for OpenClaw. It uses FastAPI for the HTTP API, SQLite for durable memory metadata, FAISS for local vector search, and sentence-transformers for local embeddings.
