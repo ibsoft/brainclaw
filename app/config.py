@@ -39,9 +39,14 @@ class Settings(BaseSettings):
     sqlite_path: Path = Field(default=BASE_DIR / "data" / "memory.sqlite3", alias="SQLITE_PATH")
     faiss_index_path: Path = Field(default=BASE_DIR / "data" / "faiss.index", alias="FAISS_INDEX_PATH")
     id_map_path: Path = Field(default=BASE_DIR / "data" / "id_map.json", alias="ID_MAP_PATH")
+    index_dir: Path = Field(default=BASE_DIR / "data" / "indexes", alias="INDEX_DIR")
     upload_dir: Path = Field(default=BASE_DIR / "data" / "uploads", alias="UPLOAD_DIR")
+    isolate_indexes: bool = Field(default=True, alias="ISOLATE_INDEXES")
 
-    embedding_model_name: str = Field(default="sentence-transformers/all-MiniLM-L6-v2", alias="EMBEDDING_MODEL_NAME")
+    admin_username: str = Field(default="admin", alias="ADMIN_USERNAME")
+    admin_session_secret: Optional[str] = Field(default=None, alias="ADMIN_SESSION_SECRET")
+
+    embedding_model_name: str = Field(default="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2", alias="EMBEDDING_MODEL_NAME")
     embedding_dimension: int = Field(default=384, alias="EMBEDDING_DIMENSION")
 
     max_content_chars: int = Field(default=100_000, alias="MAX_CONTENT_CHARS")
@@ -73,6 +78,11 @@ class Settings(BaseSettings):
     def validate_id_map_path(cls, value: str | Path) -> Path:
         return _safe_project_path(str(value), "data/id_map.json")
 
+    @field_validator("index_dir", mode="before")
+    @classmethod
+    def validate_index_dir(cls, value: str | Path) -> Path:
+        return _safe_project_path(str(value), "data/indexes")
+
     @field_validator("upload_dir", mode="before")
     @classmethod
     def validate_upload_dir(cls, value: str | Path) -> Path:
@@ -86,5 +96,6 @@ def get_settings() -> Settings:
     settings.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     settings.faiss_index_path.parent.mkdir(parents=True, exist_ok=True)
     settings.id_map_path.parent.mkdir(parents=True, exist_ok=True)
+    settings.index_dir.mkdir(parents=True, exist_ok=True)
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     return settings

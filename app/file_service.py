@@ -153,18 +153,38 @@ class FileService:
         self.faiss_store = faiss_store
 
     async def upload_file(self, agent_id: str, workspace: str, source: str, raw_tags: str | None, upload: UploadFile) -> dict[str, Any]:
+        data = await upload.read(self.settings.max_upload_bytes + 1)
+        return self.ingest_file_bytes(
+            agent_id=agent_id,
+            workspace=workspace,
+            source=source,
+            raw_tags=raw_tags,
+            filename=upload.filename or "upload",
+            content_type=upload.content_type,
+            data=data,
+        )
+
+    def ingest_file_bytes(
+        self,
+        agent_id: str,
+        workspace: str,
+        source: str,
+        raw_tags: str | None,
+        filename: str,
+        content_type: str | None,
+        data: bytes,
+    ) -> dict[str, Any]:
         agent_id = agent_id.strip()
         workspace = workspace.strip()
         source = source.strip()
         if not agent_id or not workspace or not source:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="agent_id, workspace, and source are required")
 
-        original_filename = sanitize_filename(upload.filename or "upload")
+        original_filename = sanitize_filename(filename)
         extension = Path(original_filename).suffix.lower()
         if extension in DANGEROUS_EXTENSIONS or extension not in ALLOWED_EXTENSIONS:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unsupported or dangerous file extension")
 
-        data = await upload.read(self.settings.max_upload_bytes + 1)
         size_bytes = len(data)
         if size_bytes == 0:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="empty files are not supported")
@@ -206,7 +226,7 @@ class FileService:
                 "original_filename": original_filename,
                 "stored_filename": stored_filename,
                 "extension": extension,
-                "content_type": upload.content_type,
+                "content_type": content_type,
                 "sha256": sha256,
                 "size_bytes": size_bytes,
                 "tags": tags,
@@ -216,7 +236,7 @@ class FileService:
         chunk_rows = self.db.get_chunks_for_file(file_id)
         vectors = self.embeddings.embed_texts([row["text"] for row in chunk_rows])
         mappings = [{"type": "file", "chunk_id": int(row["id"]), "file_id": file_id} for row in chunk_rows]
-        self.faiss_store.add(vectors, mappings)
+        self.faiss_store.add(vectors, mappings, agent_id, workspace)
         logger.info(
             "file_uploaded",
             extra={
@@ -247,7 +267,7 @@ class FileService:
     def search_files(self, request: FileSearchRequest) -> list[dict[str, Any]]:
         vector = self.embeddings.embed_query(request.query)
         probe_limit = min(max(request.top_k * 10, request.top_k), max(self.faiss_store.vector_count, request.top_k))
-        raw_results = self.faiss_store.search(vector, probe_limit)
+        raw_results = self.faiss_store.search(vector, probe_limit, request.agent_id, request.workspace)
         results: list[dict[str, Any]] = []
         seen_chunks: set[int] = set()
         required_tags = set(request.tags or [])
@@ -308,13 +328,29 @@ class FileService:
         deleted = self.db.delete_file(file_id, agent_id, workspace)
         if not deleted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="file not found")
-        rebuilt = self.reindex_files_and_memories()
+        rebuilt = self.reindex_files_and_memories(agent_id, workspace)
         logger.info("file_deleted", extra={"file_id": file_id, "agent_id": agent_id, "workspace": workspace})
         return {"ok": True, "id": file_id, "message": "file deleted", "details": rebuilt["details"]}
 
-    def reindex_files_and_memories(self) -> dict[str, Any]:
-        memory_rows = self.db.iter_active_chunks()
-        file_rows = self.db.iter_active_file_chunks()
+    def reindex_files_and_memories(self, agent_id: str | None = None, workspace: str | None = None) -> dict[str, Any]:
+        if self.faiss_store.settings.isolate_indexes and not (agent_id and workspace):
+            total_vectors = 0
+            scopes = self.db.list_scopes()
+            for scope in scopes:
+                rebuilt = self.reindex_files_and_memories(scope["agent_id"], scope["workspace"])
+                total_vectors += int(rebuilt["details"]["vectors"])
+            return {
+                "ok": True,
+                "id": None,
+                "message": "isolated file and memory indexes rebuilt",
+                "details": {"vectors": total_vectors, "scopes": len(scopes)},
+            }
+        if agent_id and workspace:
+            memory_rows = self.db.iter_active_chunks_scoped(agent_id, workspace)
+            file_rows = self.db.iter_active_file_chunks_scoped(agent_id, workspace)
+        else:
+            memory_rows = self.db.iter_active_chunks()
+            file_rows = self.db.iter_active_file_chunks()
         texts = [row["chunk_text"] for row in memory_rows] + [row["chunk_text"] for row in file_rows]
         vectors = self.embeddings.embed_texts(texts)
         mappings: list[dict[str, Any]] = [
@@ -325,7 +361,7 @@ class FileService:
             {"type": "file", "chunk_id": int(row["file_chunk_id"]), "file_id": int(row["id"])}
             for row in file_rows
         )
-        self.faiss_store.rebuild(vectors, mappings)
+        self.faiss_store.rebuild(vectors, mappings, agent_id, workspace)
         return {
             "ok": True,
             "id": None,

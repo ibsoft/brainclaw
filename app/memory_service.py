@@ -89,7 +89,7 @@ class MemoryService:
         chunk_rows = self.db.get_chunks_for_memory(memory_id)
         vectors = self.embeddings.embed_texts([row["text"] for row in chunk_rows])
         mappings = [{"type": "memory", "chunk_id": int(row["id"]), "memory_id": memory_id} for row in chunk_rows]
-        self.faiss_store.add(vectors, mappings)
+        self.faiss_store.add(vectors, mappings, request.agent_id, request.workspace)
         logger.info(
             "memory_added",
             extra={
@@ -115,7 +115,7 @@ class MemoryService:
     def search_memory(self, request: MemorySearchRequest) -> list[dict[str, Any]]:
         vector = self.embeddings.embed_query(request.query)
         probe_limit = min(max(request.top_k * 10, request.top_k), max(self.faiss_store.vector_count, request.top_k))
-        raw_results = self.faiss_store.search(vector, probe_limit)
+        raw_results = self.faiss_store.search(vector, probe_limit, request.agent_id, request.workspace)
         results: list[dict[str, Any]] = []
         seen_memories: set[int] = set()
         required_tags = set(request.tags or [])
@@ -160,7 +160,7 @@ class MemoryService:
         deleted = self.db.delete_memory(request.id, request.agent_id, request.workspace)
         if not deleted:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="memory not found")
-        rebuilt = self.rebuild_index()
+        rebuilt = self.rebuild_index(request.agent_id, request.workspace)
         logger.info("memory_deleted", extra={"memory_id": request.id, "agent_id": request.agent_id, "workspace": request.workspace})
         return {"ok": True, "id": request.id, "message": "memory deleted", "details": rebuilt["details"]}
 
@@ -180,7 +180,7 @@ class MemoryService:
         updated = self.db.update_memory(request.id, updates, chunks)
         if not updated:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="memory not found")
-        rebuilt = self.rebuild_index()
+        rebuilt = self.rebuild_index(request.agent_id, request.workspace)
         logger.info(
             "memory_updated",
             extra={
@@ -192,9 +192,25 @@ class MemoryService:
         )
         return {"ok": True, "id": request.id, "message": "memory updated", "details": rebuilt["details"]}
 
-    def rebuild_index(self) -> dict[str, Any]:
-        rows = self.db.iter_active_chunks()
-        file_rows = self.db.iter_active_file_chunks()
+    def rebuild_index(self, agent_id: str | None = None, workspace: str | None = None) -> dict[str, Any]:
+        if self.faiss_store.settings.isolate_indexes and not (agent_id and workspace):
+            total_vectors = 0
+            scopes = self.db.list_scopes()
+            for scope in scopes:
+                rebuilt = self.rebuild_index(scope["agent_id"], scope["workspace"])
+                total_vectors += int(rebuilt["details"]["vectors"])
+            return {
+                "ok": True,
+                "id": None,
+                "message": "isolated indexes rebuilt",
+                "details": {"vectors": total_vectors, "scopes": len(scopes)},
+            }
+        if agent_id and workspace:
+            rows = self.db.iter_active_chunks_scoped(agent_id, workspace)
+            file_rows = self.db.iter_active_file_chunks_scoped(agent_id, workspace)
+        else:
+            rows = self.db.iter_active_chunks()
+            file_rows = self.db.iter_active_file_chunks()
         texts = [row["chunk_text"] for row in rows] + [row["chunk_text"] for row in file_rows]
         vectors = self.embeddings.embed_texts(texts)
         mappings: list[dict[str, Any]] = [
@@ -205,5 +221,5 @@ class MemoryService:
             {"type": "file", "chunk_id": int(row["file_chunk_id"]), "file_id": int(row["id"])}
             for row in file_rows
         )
-        self.faiss_store.rebuild(vectors, mappings)
+        self.faiss_store.rebuild(vectors, mappings, agent_id, workspace)
         return {"ok": True, "id": None, "message": "index rebuilt", "details": {"vectors": len(mappings)}}

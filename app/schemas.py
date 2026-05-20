@@ -241,6 +241,7 @@ class HealthResponse(BaseModel):
     index_vectors: int
     sqlite_path: str
     faiss_index_path: str
+    embedding_model_name: str
 
 
 class StatusResponse(BaseModel):

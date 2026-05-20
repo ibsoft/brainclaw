@@ -1,21 +1,36 @@
 [Unit]
-Description=OpenClaw BrainClaw local memory service
-After=network.target
+Description=BrainClaw local memory service
+Documentation=file:/opt/brainclaw/README.md
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-User=openclaw
-Group=openclaw
+User=brainclaw
+Group=brainclaw
 WorkingDirectory=/opt/brainclaw
-EnvironmentFile=/opt/brainclaw/.env
+EnvironmentFile=-/opt/brainclaw/.env
 ExecStart=/opt/brainclaw/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8757
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+UMask=0077
+
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
 ReadWritePaths=/opt/brainclaw/data
 
 [Install]
 WantedBy=multi-user.target
-

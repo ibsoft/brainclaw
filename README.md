@@ -20,6 +20,15 @@ cp .env.example .env
 
 Edit `.env` and set `MEMORY_API_KEY` to a long random value.
 
+BrainClaw defaults to a multilingual embedding model:
+
+```text
+EMBEDDING_MODEL_NAME=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
+EMBEDDING_DIMENSION=384
+```
+
+Use a multilingual model if you store or query Greek or other non-English text. If you change `EMBEDDING_MODEL_NAME`, rebuild the FAISS indexes because old vectors were created with the previous model.
+
 On Windows PowerShell:
 
 ```powershell
@@ -35,6 +44,18 @@ Copy-Item .env.example .env
 uvicorn app.main:app --host 127.0.0.1 --port 8757
 ```
 
+Admin UI:
+
+```text
+http://127.0.0.1:8757/admin
+```
+
+Set `ADMIN_SESSION_SECRET` in `.env` before using the admin UI. On first visit, BrainClaw redirects to `/admin/setup` so you can create the admin username and password. The password is stored only as a hash in SQLite.
+
+Admin usernames must be 3-64 characters and may contain letters, numbers, `.`, `_`, `-`, and `@`. Admin passwords must be at least 12 characters and include uppercase, lowercase, number, and symbol characters.
+
+Admin tables are paginated. The default page size is 50 rows; most table URLs accept `page` and `per_page` query parameters.
+
 Health check:
 
 ```bash
@@ -42,12 +63,97 @@ curl -H "X-API-Key: $MEMORY_API_KEY" \
   http://127.0.0.1:8757/health
 ```
 
+## Linux systemd Service
+
+The repo includes `brainclaw.service` for a local Linux install under `/opt/brainclaw`.
+
+Quick install from the repo checkout:
+
+```bash
+sudo ./scripts/install-linux-service.sh
+```
+
+Quick uninstall, keeping installed files and memory data:
+
+```bash
+sudo ./scripts/uninstall-linux-service.sh
+```
+
+Uninstall and remove `/opt/brainclaw`:
+
+```bash
+sudo REMOVE_DATA=true ./scripts/uninstall-linux-service.sh
+```
+
+Remove the service user too:
+
+```bash
+sudo REMOVE_DATA=true REMOVE_USER=true ./scripts/uninstall-linux-service.sh
+```
+
+Installer defaults:
+
+- `SERVICE_NAME=brainclaw`
+- `SERVICE_USER=brainclaw`
+- `INSTALL_DIR=/opt/brainclaw`
+- `PYTHON_BIN=python3.12`
+
+Override example:
+
+```bash
+sudo INSTALL_DIR=/srv/brainclaw PYTHON_BIN=python3.11 ./scripts/install-linux-service.sh
+```
+
+Manual install steps, equivalent to what the script automates:
+
+```bash
+sudo useradd --system --home /opt/brainclaw --shell /usr/sbin/nologin brainclaw
+sudo mkdir -p /opt/brainclaw
+sudo rsync -a --exclude .git ./ /opt/brainclaw/
+sudo chown -R brainclaw:brainclaw /opt/brainclaw
+cd /opt/brainclaw
+sudo -u brainclaw python3.12 -m venv .venv
+sudo -u brainclaw .venv/bin/pip install -r requirements.txt
+sudo -u brainclaw cp .env.example .env
+sudo -u brainclaw python3 - <<'PY'
+import secrets
+from pathlib import Path
+
+env = Path(".env")
+text = env.read_text()
+text = text.replace("replace-with-a-long-random-local-key", secrets.token_urlsafe(32))
+text = text.replace("replace-with-a-long-random-session-secret", secrets.token_urlsafe(32))
+env.write_text(text)
+PY
+sudo cp brainclaw.service /etc/systemd/system/brainclaw.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now brainclaw
+```
+
+Check it:
+
+```bash
+sudo systemctl status brainclaw
+sudo journalctl -u brainclaw -f
+curl -H "X-API-Key: $(sudo sed -n 's/^MEMORY_API_KEY=//p' /opt/brainclaw/.env)" \
+  http://127.0.0.1:8757/health
+```
+
+The unit runs as the `brainclaw` system user, binds to `127.0.0.1`, applies systemd hardening, and only grants write access to `/opt/brainclaw/data`.
+
 ## API
 
 All endpoints require:
 
 ```text
 X-API-Key: your-memory-api-key
+```
+
+For manual testing, export the key:
+
+```bash
+export MEMORY_API_KEY="$(sed -n 's/^MEMORY_API_KEY=//p' .env)"
+export BRAINCLAW_URL="http://127.0.0.1:8757"
 ```
 
 ### Add Memory
@@ -125,6 +231,99 @@ curl -X POST http://127.0.0.1:8757/memory/rebuild-index \
   -H "X-API-Key: $MEMORY_API_KEY"
 ```
 
+Rebuild after changing embedding models or after enabling isolated indexes.
+
+### Manual curl Test Flow
+
+Create a memory:
+
+```bash
+curl -sS -X POST "$BRAINCLAW_URL/memory/add" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $MEMORY_API_KEY" \
+  -d '{
+    "agent_id": "curl-agent",
+    "workspace": "default",
+    "source": "manual-curl",
+    "memory_type": "note",
+    "content": "BrainClaw manual curl test memory about secure local operations.",
+    "tags": ["manual", "curl"],
+    "importance": 0.7
+  }'
+```
+
+Search it:
+
+```bash
+curl -sS -X POST "$BRAINCLAW_URL/memory/search" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $MEMORY_API_KEY" \
+  -d '{
+    "agent_id": "curl-agent",
+    "workspace": "default",
+    "query": "secure local operations",
+    "top_k": 5,
+    "min_score": 0.1
+  }'
+```
+
+Upload a document:
+
+```bash
+printf 'BrainClaw curl upload test document.\n' > /tmp/brainclaw-upload-test.txt
+curl -sS -X POST "$BRAINCLAW_URL/files/upload" \
+  -H "X-API-Key: $MEMORY_API_KEY" \
+  -F "agent_id=curl-agent" \
+  -F "workspace=default" \
+  -F "source=manual-upload" \
+  -F "tags=[\"manual\",\"upload\"]" \
+  -F "file=@/tmp/brainclaw-upload-test.txt"
+```
+
+Search uploaded documents:
+
+```bash
+curl -sS -X POST "$BRAINCLAW_URL/files/search" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $MEMORY_API_KEY" \
+  -d '{
+    "agent_id": "curl-agent",
+    "workspace": "default",
+    "query": "upload test document",
+    "top_k": 5,
+    "min_score": 0.1
+  }'
+```
+
+Update a memory after noting its returned `id`:
+
+```bash
+curl -sS -X POST "$BRAINCLAW_URL/memory/update" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $MEMORY_API_KEY" \
+  -d '{
+    "id": 1,
+    "agent_id": "curl-agent",
+    "workspace": "default",
+    "content": "Updated BrainClaw manual curl test memory.",
+    "tags": ["manual", "curl", "updated"],
+    "importance": 0.8
+  }'
+```
+
+Delete a memory:
+
+```bash
+curl -sS -X POST "$BRAINCLAW_URL/memory/delete" \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $MEMORY_API_KEY" \
+  -d '{
+    "id": 1,
+    "agent_id": "curl-agent",
+    "workspace": "default"
+  }'
+```
+
 ## Storage
 
 Runtime files are created under `data/`:
@@ -132,9 +331,93 @@ Runtime files are created under `data/`:
 - `data/memory.sqlite3` stores raw memory records and chunk metadata.
 - `data/faiss.index` stores the FAISS vector index.
 - `data/id_map.json` maps FAISS positions back to SQLite chunk and memory IDs.
+- `data/indexes/` stores isolated FAISS indexes when `ISOLATE_INDEXES=true`.
 - `data/uploads/` stores uploaded files with safe UUID filenames.
 
 Long content is split into overlapping chunks. Every chunk is embedded, normalized, and stored in FAISS using `IndexFlatIP`, which provides cosine similarity for normalized vectors.
+
+## Isolation
+
+`ISOLATE_INDEXES=true` is the default. In that mode BrainClaw keeps a separate FAISS index and ID map for each `agent_id` + `workspace`, so vector search never probes another agent/workspace and filters afterward.
+
+The legacy `MEMORY_API_KEY` is treated as an admin key. Additional API keys can be created in `/admin/api-keys`; agent keys are bound to one `agent_id` + `workspace` and receive `403` if they try to read, search, write, update, delete, upload, or reindex another scope.
+
+If you already have memories from an older global-index setup, rebuild once after enabling isolation:
+
+```bash
+curl -X POST http://127.0.0.1:8757/memory/rebuild-index \
+  -H "X-API-Key: $MEMORY_API_KEY"
+```
+
+This creates the per-scope indexes under `data/indexes/`.
+
+## Admin SQL Query
+
+The admin UI includes a read-only SQL query screen at:
+
+```text
+http://127.0.0.1:8757/admin/query
+```
+
+BrainClaw accepts a deliberately small query language, called BrainQL, that is just a constrained SQLite subset:
+
+- One statement only.
+- Statement must start with `SELECT` or `WITH`.
+- Mutating and operational statements such as `INSERT`, `UPDATE`, `DELETE`, `DROP`, `ALTER`, `CREATE`, `PRAGMA`, `ATTACH`, `DETACH`, and `VACUUM` are blocked.
+- Internal credential storage such as `app_settings`, `key_hash`, and `password_hash` is blocked.
+- The admin UI displays at most 200 rows.
+
+Useful tables:
+
+- `memories`: memory records, including `agent_id`, `workspace`, `source`, `memory_type`, `content`, `tags_json`, `importance`, timestamps, and `deleted`.
+- `chunks`: memory chunks with `memory_id`, `chunk_index`, and `text`.
+- `files`: uploaded file records.
+- `file_chunks`: indexed uploaded-file chunks.
+- `api_keys`: API key metadata. Secret hashes are not exposed through BrainQL.
+
+Examples:
+
+```sql
+SELECT agent_id, workspace, COUNT(*) AS memories
+FROM memories
+WHERE deleted = 0
+GROUP BY agent_id, workspace;
+```
+
+```sql
+SELECT m.id, m.agent_id, m.workspace, c.text
+FROM chunks c
+JOIN memories m ON m.id = c.memory_id
+WHERE m.deleted = 0 AND c.deleted = 0
+  AND c.text LIKE '%security%'
+LIMIT 50;
+```
+
+## Admin Ingest
+
+The admin UI can add notes or upload documents from:
+
+```text
+http://127.0.0.1:8757/admin/ingest
+```
+
+Ingest modes:
+
+- `Note to memory`: stores the text as a normal memory record and indexes its chunks.
+- `Document upload`: stores the uploaded file, extracts text, chunks it, and indexes the chunks.
+
+Targets:
+
+- `One agent/workspace`: provide `agent_id` and `workspace`. This can create a new scope.
+- `All existing agents/workspaces`: copies the same note or document into every current scope listed in the admin UI.
+
+Document uploads use the same security checks as the API upload path: size limits, allowed extensions, secret-pattern rejection, safe filenames, local storage under `data/uploads/`, and per-scope FAISS indexes.
+
+The ingest screen also shows recent memories and documents:
+
+- Memories can be edited or deleted from the admin UI.
+- Documents can be deleted from future search results. To replace a document, delete it and upload the replacement.
+- Upload/ingest forms show a spinner and disable submit buttons while embedding and indexing are running.
 
 ## Security Notes
 
@@ -144,6 +427,9 @@ Long content is split into overlapping chunks. Every chunk is embedded, normaliz
 - Input sizes, upload size, tag counts, content length, query length, and `top_k` are bounded.
 - Configured file paths must remain inside the project directory.
 - `MEMORY_API_KEY` is required for memory endpoints unless `ALLOW_MISSING_API_KEY=true` is explicitly set.
+- Agent API keys are stored as SHA-256 hashes and shown only once at creation.
+- Admin browser forms use a first-run setup screen, hashed passwords, login sessions, CSRF tokens, `HttpOnly`/`SameSite=Strict` cookies, and defensive response headers.
+- Admin SQL querying is read-only, single-statement, and blocks credential internals.
 - Uploaded files are never executed, are stored outside any public web directory, and only approved extensions are accepted.
 
 This is local memory infrastructure, not a public internet service.
