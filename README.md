@@ -425,7 +425,21 @@ The ingest screen also shows recent memories and documents:
 
 ## OpenClaw Prompt Persistence
 
-`OpenClaw.md` is intended to be installed as OpenClaw's persistent system prompt or startup instruction file. Pasting it into a normal chat is not enough if `/new` clears chat context.
+The OpenClaw prompt/default source files live under `openclaw/`. `openclaw/OpenClaw.md` is intended to be installed as OpenClaw's persistent system prompt or startup instruction file. Pasting it into a normal chat is not enough if `/new` clears chat context.
+
+Source layout:
+
+```text
+openclaw/OpenClaw.md
+openclaw/AGENTS.md
+openclaw/BOOTSTRAP.md
+openclaw/HEARTBEAT.md
+openclaw/IDENTITY.md
+openclaw/MEMORY.md
+openclaw/SOUL.md
+openclaw/TOOLS.md
+openclaw/USER.md
+```
 
 Install the prompt and a starter environment file:
 

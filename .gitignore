@@ -2,6 +2,7 @@
 __pycache__/
 data/indexes/
 data/uploads/
+data/backups/
 *.py[codz]
 *$py.class
 

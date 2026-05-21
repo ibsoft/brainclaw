@@ -98,11 +98,11 @@ Expected `/etc/openclaw/environment.conf` example:
 ```bash
 BRAINCLAW_URL=http://127.0.0.1:8757
 BRAINCLAW_API_KEY=replace-with-api-key
-OPENCLAW_AGENT_ID=Kim
-OPENCLAW_WORKSPACE=Kims-workspace
+OPENCLAW_AGENT_ID=BrainClaw
+OPENCLAW_WORKSPACE=BrainClaws-workspace
 ```
 
-The `OPENCLAW_AGENT_ID` and `OPENCLAW_WORKSPACE` values must match the BrainClaw scope that contains the user's memories. BrainClaw indexes are isolated by scope, so searching `openclaw/default` will not find memories stored under `Kim/Kims-workspace`.
+The `OPENCLAW_AGENT_ID` and `OPENCLAW_WORKSPACE` values must match the BrainClaw scope that contains the user's memories. BrainClaw indexes are isolated by scope, so searching `openclaw/default` will not find memories stored under `BrainClaw/BrainClaws-workspace`.
 
 Bootstrap shell pattern:
 

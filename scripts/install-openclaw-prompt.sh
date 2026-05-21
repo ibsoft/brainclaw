@@ -15,6 +15,7 @@ if [[ "${EUID}" -ne 0 ]]; then
 fi
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+OPENCLAW_SOURCE_DIR="${OPENCLAW_SOURCE_DIR:-${SRC_DIR}/openclaw}"
 WORKSPACE_TARGET="${OPENCLAW_WORKSPACE_DIR:-${SRC_DIR}}"
 WORKSPACE_OWNER_UID="${OPENCLAW_WORKSPACE_UID:-${SUDO_UID:-}}"
 WORKSPACE_OWNER_GID="${OPENCLAW_WORKSPACE_GID:-${SUDO_GID:-}}"
@@ -28,6 +29,10 @@ OPENCLAW_DEFAULT_FILES=(
   TOOLS.md
   USER.md
 )
+if [[ ! -f "${OPENCLAW_SOURCE_DIR}/OpenClaw.md" ]]; then
+  echo "OpenClaw source files not found: ${OPENCLAW_SOURCE_DIR}" >&2
+  exit 1
+fi
 
 install_if_different() {
   local src="$1"
@@ -42,30 +47,27 @@ install_if_different() {
 
 install -d -m 0755 "${OPENCLAW_DIR}"
 install -d -m 0755 "${DEFAULTS_TARGET}"
-install -m 0644 "${SRC_DIR}/OpenClaw.md" "${PROMPT_TARGET}"
+install -m 0644 "${OPENCLAW_SOURCE_DIR}/OpenClaw.md" "${PROMPT_TARGET}"
 install -m 0755 "${SRC_DIR}/scripts/openclaw-brainclaw-wrapper.sh" /usr/local/bin/openclaw-brainclaw
 
 for file in "${OPENCLAW_DEFAULT_FILES[@]}"; do
-  install -m 0644 "${SRC_DIR}/${file}" "${DEFAULTS_TARGET}/${file}"
+  install -m 0644 "${OPENCLAW_SOURCE_DIR}/${file}" "${DEFAULTS_TARGET}/${file}"
 done
 
 if [[ -n "${WORKSPACE_TARGET}" ]]; then
   install -d -m 0755 "${WORKSPACE_TARGET}"
-  install_if_different "${SRC_DIR}/OpenClaw.md" "${WORKSPACE_TARGET}/OpenClaw.md"
+  install_if_different "${OPENCLAW_SOURCE_DIR}/OpenClaw.md" "${WORKSPACE_TARGET}/OpenClaw.md"
   for file in "${OPENCLAW_DEFAULT_FILES[@]}"; do
-    install_if_different "${SRC_DIR}/${file}" "${WORKSPACE_TARGET}/${file}"
+    install_if_different "${OPENCLAW_SOURCE_DIR}/${file}" "${WORKSPACE_TARGET}/${file}"
   done
   if [[ -n "${WORKSPACE_OWNER_UID}" && -n "${WORKSPACE_OWNER_GID}" ]]; then
-    chown "${WORKSPACE_OWNER_UID}:${WORKSPACE_OWNER_GID}" \
-      "${WORKSPACE_TARGET}/OpenClaw.md" \
-      "${WORKSPACE_TARGET}/AGENTS.md" \
-      "${WORKSPACE_TARGET}/BOOTSTRAP.md" \
-      "${WORKSPACE_TARGET}/HEARTBEAT.md" \
-      "${WORKSPACE_TARGET}/IDENTITY.md" \
-      "${WORKSPACE_TARGET}/MEMORY.md" \
-      "${WORKSPACE_TARGET}/SOUL.md" \
-      "${WORKSPACE_TARGET}/TOOLS.md" \
-      "${WORKSPACE_TARGET}/USER.md"
+    chown_targets=("${WORKSPACE_TARGET}/OpenClaw.md")
+    for file in "${OPENCLAW_DEFAULT_FILES[@]}"; do
+      if [[ -f "${WORKSPACE_TARGET}/${file}" ]]; then
+        chown_targets+=("${WORKSPACE_TARGET}/${file}")
+      fi
+    done
+    chown "${WORKSPACE_OWNER_UID}:${WORKSPACE_OWNER_GID}" "${chown_targets[@]}"
   fi
 fi
 
@@ -94,6 +96,7 @@ fi
 
 echo "Installed OpenClaw prompt: ${PROMPT_TARGET}"
 echo "Installed OpenClaw defaults: ${DEFAULTS_TARGET}"
+echo "OpenClaw source files: ${OPENCLAW_SOURCE_DIR}"
 echo "Injected OpenClaw workspace files: ${WORKSPACE_TARGET}"
 echo "Installed wrapper: /usr/local/bin/openclaw-brainclaw"
 echo "Environment config: ${ENV_TARGET}"
