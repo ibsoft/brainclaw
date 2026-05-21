@@ -1,4 +1,7 @@
 <img width="1536" height="1024" alt="ChatGPT Image May 20, 2026, 02_40_52 PM" src="https://github.com/user-attachments/assets/5a0d99c8-cfae-4e4e-9420-5a82d62b0d77" />
+<img width="1910" height="993" alt="image" src="https://github.com/user-attachments/assets/876865e8-f6c0-4bda-886c-b031009db7b5" />
+<img width="1915" height="989" alt="image" src="https://github.com/user-attachments/assets/50f35fb0-b5ab-42ff-8d31-175e953ce6bd" />
+<img width="1917" height="983" alt="image" src="https://github.com/user-attachments/assets/802303cb-8007-478d-ade4-d094616f584e" />
 
 
 # BrainClaw
@@ -425,21 +428,7 @@ The ingest screen also shows recent memories and documents:
 
 ## OpenClaw Prompt Persistence
 
-The OpenClaw prompt/default source files live under `openclaw/`. `openclaw/OpenClaw.md` is intended to be installed as OpenClaw's persistent system prompt or startup instruction file. Pasting it into a normal chat is not enough if `/new` clears chat context.
-
-Source layout:
-
-```text
-openclaw/OpenClaw.md
-openclaw/AGENTS.md
-openclaw/BOOTSTRAP.md
-openclaw/HEARTBEAT.md
-openclaw/IDENTITY.md
-openclaw/MEMORY.md
-openclaw/SOUL.md
-openclaw/TOOLS.md
-openclaw/USER.md
-```
+`OpenClaw.md` is intended to be installed as OpenClaw's persistent system prompt or startup instruction file. Pasting it into a normal chat is not enough if `/new` clears chat context.
 
 Install the prompt and a starter environment file:
 
