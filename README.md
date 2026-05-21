@@ -466,8 +466,8 @@ Set:
 ```bash
 BRAINCLAW_URL=http://127.0.0.1:8757
 BRAINCLAW_API_KEY=your-brainclaw-api-key
-OPENCLAW_AGENT_ID=Kim
-OPENCLAW_WORKSPACE=Kims-workspace
+OPENCLAW_AGENT_ID=BrainClaw
+OPENCLAW_WORKSPACE=BrainClaws-workspace
 OPENCLAW_SYSTEM_PROMPT=/etc/openclaw/OpenClaw.md
 OPENCLAW_DEFAULTS_DIR=/etc/openclaw/defaults
 OPENCLAW_WORKSPACE_DIR=/path/to/openclaw/workspace
