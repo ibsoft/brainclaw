@@ -128,6 +128,12 @@ class FaissStore:
         index, _ = self._store_for_scope(agent_id, workspace)
         return int(index.ntotal)
 
+    def reload(self) -> None:
+        with self.lock:
+            self._stores.clear()
+            self.index = self._load_or_create_index(self.index_path)
+            self.id_map = self._load_id_map(self.id_map_path)
+
     @property
     def vector_count(self) -> int:
         if not self.settings.isolate_indexes:

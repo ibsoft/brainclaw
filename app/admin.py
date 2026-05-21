@@ -1,10 +1,18 @@
+import io
+import json
 import math
 import re
 import secrets
+import shutil
+import sqlite3
+import tempfile
+import zipfile
+from datetime import datetime, timezone
 from functools import wraps
+from pathlib import Path
 from typing import Any, Callable
 
-from flask import Flask, flash, redirect, render_template_string, request, session, url_for
+from flask import Flask, flash, redirect, render_template_string, request, send_file, session, url_for
 from markupsafe import Markup, escape
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
@@ -36,7 +44,8 @@ BASE_TEMPLATE = """
     .sql-editor { min-height: 180px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
     .auth-shell { min-height: calc(100vh - 7rem); display: grid; place-items: center; }
     .auth-card { width: min(100%, 30rem); }
-    .flash-stack { position: sticky; top: .75rem; z-index: 1100; }
+    .clickable-row { cursor: pointer; }
+    .memory-full-content { white-space: pre-wrap; max-height: 55vh; overflow: auto; }
     .loading-overlay {
       position: fixed; inset: 0; display: none; place-items: center; z-index: 2000;
       background: rgba(2, 6, 23, .72); backdrop-filter: blur(3px);
@@ -58,6 +67,7 @@ BASE_TEMPLATE = """
       <a class="nav-link" href="{{ url_for('memories') }}"><i class="fa-solid fa-layer-group me-1"></i>Memories</a>
       <a class="nav-link" href="{{ url_for('ingest') }}"><i class="fa-solid fa-file-circle-plus me-1"></i>Ingest</a>
       <a class="nav-link" href="{{ url_for('query') }}"><i class="fa-solid fa-terminal me-1"></i>SQL Query</a>
+      <a class="nav-link" href="{{ url_for('backup_restore') }}"><i class="fa-solid fa-box-archive me-1"></i>Backup</a>
       <a class="nav-link" href="{{ url_for('api_keys') }}"><i class="fa-solid fa-key me-1"></i>API Keys</a>
     </div>
     <form method="post" action="{{ url_for('logout') }}" class="ms-auto">
@@ -68,18 +78,57 @@ BASE_TEMPLATE = """
 </nav>
 {% endif %}
 <main class="container-fluid py-4 flex-grow-1">
-  <div class="flash-stack">
-  {% for category, message in get_flashed_messages(with_categories=true) %}
-    {% set alert_class = {"error": "danger", "message": "info"}.get(category, category) %}
-    {% set alert_icon = {"success": "circle-check", "danger": "triangle-exclamation", "error": "triangle-exclamation", "warning": "circle-exclamation", "info": "circle-info"}.get(category, "circle-info") %}
-    <div class="alert alert-{{ alert_class }} alert-dismissible fade show shadow-sm" role="alert">
-      <i class="fa-solid fa-{{ alert_icon }} me-2"></i>{{ message }}
-      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
-    </div>
-  {% endfor %}
-  </div>
   {{ body|safe }}
 </main>
+{% set flash_messages = get_flashed_messages(with_categories=true) %}
+<div id="flashModal" class="modal fade" tabindex="-1" aria-labelledby="flashModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content panel">
+      <div class="modal-header">
+        <h5 class="modal-title" id="flashModalTitle"><i id="flashModalIcon" class="fa-solid fa-circle-info me-2 icon-muted"></i><span id="flashModalHeading">Message</span></h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="flashModalBody"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" data-bs-dismiss="modal">OK</button>
+      </div>
+    </div>
+  </div>
+</div>
+<div id="confirmModal" class="modal fade" tabindex="-1" aria-labelledby="confirmModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content panel">
+      <div class="modal-header">
+        <h5 class="modal-title" id="confirmModalTitle"><i class="fa-solid fa-triangle-exclamation me-2 text-warning"></i>Confirm action</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body" id="confirmModalBody"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-light" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-danger" id="confirmModalSubmit"><i class="fa-solid fa-check me-1"></i>Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% if created_key is defined and created_key %}
+<div id="createdKeyModal" class="modal fade" tabindex="-1" aria-labelledby="createdKeyModalTitle" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content panel">
+      <div class="modal-header">
+        <h5 class="modal-title" id="createdKeyModalTitle"><i class="fa-solid fa-key me-2 text-warning"></i>API key created</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-secondary">This key is shown once. Store it before closing this modal.</p>
+        <div class="secret-box p-3 rounded border border-warning-subtle bg-dark text-warning">{{ created_key }}</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Done</button>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 <div class="loading-overlay" aria-live="polite" aria-busy="true">
   <div class="loading-box shadow">
     <div class="spinner-border text-info mb-3" role="status"></div>
@@ -92,6 +141,7 @@ BASE_TEMPLATE = """
     <div class="d-flex align-items-center gap-2">
       <span class="footer-pill"><i class="fa-solid fa-shield-halved me-1"></i>Local-first admin</span>
       <span class="footer-pill"><i class="fa-solid fa-database me-1"></i>SQLite + FAISS</span>
+      <a class="footer-pill text-decoration-none text-reset" href="https://github.com/ibsoft/brainclaw" target="_blank" rel="noopener noreferrer"><i class="fa-brands fa-github me-1"></i>ibsoft/brainclaw</a>
     </div>
     <div class="text-lg-end text-secondary">
       <i class="fa-solid fa-lock me-1"></i>Bind to localhost unless TLS, firewalling, and operational controls are in place.
@@ -100,19 +150,44 @@ BASE_TEMPLATE = """
 </footer>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
-  document.addEventListener("submit", (event) => {
-    const form = event.target;
-    if (!(form instanceof HTMLFormElement) || form.dataset.noSpinner === "true") return;
-    if (form.dataset.confirm && !window.confirm(form.dataset.confirm)) {
-      event.preventDefault();
-      return;
-    }
+  const flashMessages = {{ flash_messages|tojson }};
+  const flashMeta = {
+    success: { heading: "Success", icon: "fa-circle-check", color: "text-success" },
+    danger: { heading: "Error", icon: "fa-triangle-exclamation", color: "text-danger" },
+    error: { heading: "Error", icon: "fa-triangle-exclamation", color: "text-danger" },
+    warning: { heading: "Warning", icon: "fa-circle-exclamation", color: "text-warning" },
+    info: { heading: "Information", icon: "fa-circle-info", color: "text-info" },
+    message: { heading: "Information", icon: "fa-circle-info", color: "text-info" }
+  };
+  let pendingConfirmedForm = null;
+
+  function showLoadingForForm(form) {
     document.body.classList.add("is-loading");
     for (const button of form.querySelectorAll("button[type='submit'], button:not([type])")) {
       button.disabled = true;
       if (!button.dataset.originalHtml) button.dataset.originalHtml = button.innerHTML;
       button.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span>Working';
     }
+  }
+
+  document.addEventListener("submit", (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement) || form.dataset.noSpinner === "true") return;
+    if (form.dataset.confirm && form !== pendingConfirmedForm) {
+      event.preventDefault();
+      const body = document.getElementById("confirmModalBody");
+      const submit = document.getElementById("confirmModalSubmit");
+      body.textContent = form.dataset.confirm;
+      submit.onclick = () => {
+        pendingConfirmedForm = form;
+        bootstrap.Modal.getOrCreateInstance(document.getElementById("confirmModal")).hide();
+        showLoadingForForm(form);
+        form.requestSubmit();
+      };
+      bootstrap.Modal.getOrCreateInstance(document.getElementById("confirmModal")).show();
+      return;
+    }
+    showLoadingForForm(form);
   });
   function syncIngestFields() {
     const type = document.querySelector("[data-ingest-type]");
@@ -132,11 +207,41 @@ BASE_TEMPLATE = """
   });
   document.addEventListener("DOMContentLoaded", syncIngestFields);
   document.addEventListener("DOMContentLoaded", () => {
-    window.setTimeout(() => {
-      for (const alert of document.querySelectorAll(".flash-stack .alert")) {
-        bootstrap.Alert.getOrCreateInstance(alert).close();
-      }
-    }, 7000);
+    const createdKeyModal = document.getElementById("createdKeyModal");
+    if (createdKeyModal) bootstrap.Modal.getOrCreateInstance(createdKeyModal).show();
+  });
+  document.addEventListener("DOMContentLoaded", () => {
+    if (!flashMessages.length) return;
+    const modalElement = document.getElementById("flashModal");
+    const modal = bootstrap.Modal.getOrCreateInstance(modalElement);
+    const icon = document.getElementById("flashModalIcon");
+    const heading = document.getElementById("flashModalHeading");
+    const body = document.getElementById("flashModalBody");
+    let index = 0;
+    let timer = null;
+    function showNextFlash() {
+      if (index >= flashMessages.length) return;
+      const [category, message] = flashMessages[index++];
+      const meta = flashMeta[category] || flashMeta.info;
+      icon.className = `fa-solid ${meta.icon} me-2 ${meta.color}`;
+      heading.textContent = meta.heading;
+      body.textContent = message;
+      modal.show();
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => modal.hide(), 7000);
+    }
+    modalElement.addEventListener("hidden.bs.modal", showNextFlash);
+    showNextFlash();
+  });
+  document.addEventListener("DOMContentLoaded", () => {
+    for (const row of document.querySelectorAll("[data-memory-modal-target]")) {
+      row.addEventListener("dblclick", (event) => {
+        if (event.target.closest("a, button, form, input, textarea, select")) return;
+        const modalId = row.dataset.memoryModalTarget;
+        const modalElement = document.getElementById(modalId);
+        if (modalElement) bootstrap.Modal.getOrCreateInstance(modalElement).show();
+      });
+    }
   });
 </script>
 </body>
@@ -152,10 +257,111 @@ HIDDEN_RESULT_COLUMNS = {"key_hash", "password_hash", "admin_password_hash"}
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.@-]{3,64}$")
 PASSWORD_SPECIAL_PATTERN = re.compile(r"[^A-Za-z0-9]")
 DEFAULT_PAGE_SIZE = 50
+BACKUP_MANIFEST = "brainclaw-backup.json"
+BACKUP_MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 
 
 def clean_form_text(value: str | None, max_len: int = 256) -> str:
     return " ".join((value or "").strip().split())[:max_len]
+
+
+def safe_zip_members(archive: zipfile.ZipFile) -> list[zipfile.ZipInfo]:
+    members = archive.infolist()
+    if not members:
+        raise ValueError("Backup archive is empty.")
+    for member in members:
+        target = Path(member.filename)
+        if member.filename.startswith("/") or ".." in target.parts:
+            raise ValueError("Backup archive contains an unsafe path.")
+    return members
+
+
+def server_backup_dir(settings: Any) -> Path:
+    path = Path(settings.data_dir) / "backups"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def safe_backup_name(filename: str) -> str:
+    name = Path(filename).name
+    if not re.fullmatch(r"brainclaw-backup-[0-9TZ]+\.zip", name):
+        raise ValueError("Invalid backup filename.")
+    return name
+
+
+def backup_file_info(path: Path) -> dict[str, Any]:
+    stat = path.stat()
+    return {
+        "name": path.name,
+        "size_bytes": stat.st_size,
+        "size_mb": stat.st_size / (1024 * 1024),
+        "created_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+    }
+
+
+def list_server_backups(settings: Any) -> list[dict[str, Any]]:
+    backup_dir = server_backup_dir(settings)
+    return [backup_file_info(path) for path in sorted(backup_dir.glob("brainclaw-backup-*.zip"), key=lambda item: item.stat().st_mtime, reverse=True)]
+
+
+def zip_directory(zip_file: zipfile.ZipFile, root: Path, prefix: str, exclude: set[Path] | None = None) -> None:
+    if not root.exists():
+        return
+    exclude = {path.resolve() for path in (exclude or set())}
+    for path in sorted(root.rglob("*")):
+        if path.is_dir():
+            continue
+        resolved = path.resolve()
+        if any(resolved == excluded or excluded in resolved.parents for excluded in exclude):
+            continue
+        if path.suffix in {".tmp", ".bak"}:
+            continue
+        arcname = Path(prefix) / path.relative_to(root)
+        zip_file.write(path, arcname.as_posix())
+
+
+def sqlite_backup_bytes(sqlite_path: Path) -> bytes:
+    buffer = io.BytesIO()
+    with tempfile.NamedTemporaryFile(suffix=".sqlite3") as tmp:
+        source = sqlite3.connect(sqlite_path)
+        try:
+            destination = sqlite3.connect(tmp.name)
+            try:
+                source.backup(destination)
+            finally:
+                destination.close()
+        finally:
+            source.close()
+        tmp.seek(0)
+        buffer.write(tmp.read())
+    return buffer.getvalue()
+
+
+def create_backup_file(settings: Any) -> Path:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    backup_path = server_backup_dir(settings) / f"brainclaw-backup-{timestamp}.zip"
+    data_dir = Path(settings.data_dir)
+    sqlite_path = Path(settings.sqlite_path)
+    exclude = {
+        sqlite_path,
+        sqlite_path.with_name(sqlite_path.name + "-wal"),
+        sqlite_path.with_name(sqlite_path.name + "-shm"),
+        server_backup_dir(settings),
+    }
+    manifest = {
+        "app": settings.app_name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "format": "brainclaw-data-backup-v1",
+        "sqlite_path": f"data/{sqlite_path.name}",
+        "embedding_model_name": settings.embedding_model_name,
+        "isolate_indexes": settings.isolate_indexes,
+    }
+    with zipfile.ZipFile(backup_path, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        zip_file.writestr(BACKUP_MANIFEST, json.dumps(manifest, indent=2))
+        if sqlite_path.exists():
+            zip_file.writestr(f"data/{sqlite_path.name}", sqlite_backup_bytes(sqlite_path))
+        zip_directory(zip_file, data_dir, "data", exclude=exclude)
+    return backup_path
 
 
 def validate_username(username: str) -> str:
@@ -186,7 +392,7 @@ def create_admin_app(settings: Any, db: Database, memory_service: MemoryService,
         SECRET_KEY=settings.admin_session_secret or settings.memory_api_key or secrets.token_urlsafe(32),
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Strict",
-        MAX_CONTENT_LENGTH=settings.max_upload_bytes + 64 * 1024,
+        MAX_CONTENT_LENGTH=max(settings.max_upload_bytes + 64 * 1024, BACKUP_MAX_UPLOAD_BYTES),
     )
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 
@@ -227,7 +433,7 @@ def create_admin_app(settings: Any, db: Database, memory_service: MemoryService,
     def validate_csrf() -> bool:
         return bool(session.get("csrf_token")) and secrets.compare_digest(
             str(session.get("csrf_token")),
-            str(request.values.get("csrf_token", "")),
+            str(request.values.get("csrf_token", "") or request.headers.get("X-CSRF-Token", "")),
         )
 
     def validate_sql(sql: str) -> str:
@@ -439,6 +645,237 @@ def create_admin_app(settings: Any, db: Database, memory_service: MemoryService,
             per_page=per_page,
             page_url=lambda p: url_for("dashboard", page=max(1, p), per_page=per_page),
         )
+
+    @app.route("/backup", methods=["GET"])
+    @login_required
+    def backup_restore():
+        data_dir = Path(settings.data_dir)
+        sqlite_path = Path(settings.sqlite_path)
+        index_dir = Path(settings.index_dir)
+        upload_dir = Path(settings.upload_dir)
+        backup_dir = server_backup_dir(settings)
+        backups = list_server_backups(settings)
+        return render(
+            "Backup",
+            """
+            <div class="d-flex align-items-center justify-content-between mb-3">
+              <div>
+                <h1 class="h3 mb-1"><i class="fa-solid fa-box-archive me-2 icon-muted"></i>Backup and Restore</h1>
+                <div class="text-secondary">Export or restore the SQLite database, FAISS indexes, ID maps, and uploaded document storage.</div>
+              </div>
+              <form method="post" action="{{ url_for('create_backup') }}">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                <button class="btn btn-primary"><i class="fa-solid fa-box-archive me-1"></i>Create backup</button>
+              </form>
+            </div>
+
+            <div class="row g-3">
+              <div class="col-xl-6">
+                <div class="panel p-3 h-100">
+                  <h2 class="h5"><i class="fa-solid fa-database me-2 icon-muted"></i>Current data</h2>
+                  <dl class="row mb-0">
+                    <dt class="col-sm-4">Data directory</dt><dd class="col-sm-8 secret-box">{{ data_dir }}</dd>
+                    <dt class="col-sm-4">SQLite</dt><dd class="col-sm-8 secret-box">{{ sqlite_path }}</dd>
+                    <dt class="col-sm-4">Indexes</dt><dd class="col-sm-8 secret-box">{{ index_dir }}</dd>
+                    <dt class="col-sm-4">Uploads</dt><dd class="col-sm-8 secret-box">{{ upload_dir }}</dd>
+                    <dt class="col-sm-4">Server backups</dt><dd class="col-sm-8 secret-box">{{ backup_dir }}</dd>
+                    <dt class="col-sm-4">Vectors</dt><dd class="col-sm-8">{{ vector_count }}</dd>
+                  </dl>
+                  <div class="border border-danger-subtle rounded p-2 mt-3">
+                    <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
+                      <div>
+                        <div class="fw-semibold text-danger"><i class="fa-solid fa-triangle-exclamation me-1"></i>Purge all data</div>
+                        <div class="small text-secondary">Keeps saved backup zips, removes live data and credentials.</div>
+                      </div>
+                    </div>
+                    <form method="post" action="{{ url_for('purge_data') }}" data-confirm="Permanently purge all BrainClaw data? Download a backup first.">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <div class="input-group input-group-sm">
+                        <input class="form-control" name="confirmation" placeholder="Type PURGE" autocomplete="off">
+                        <button class="btn btn-outline-danger"><i class="fa-solid fa-fire me-1"></i>Purge</button>
+                      </div>
+                    </form>
+                  </div>
+                </div>
+              </div>
+              <div class="col-xl-6">
+                <div class="panel p-3 h-100">
+                  <h2 class="h5"><i class="fa-solid fa-file-zipper me-2 icon-muted"></i>Restore backup</h2>
+                  <p class="text-secondary">Restore a BrainClaw backup zip into this instance. This replaces the current data directory.</p>
+                  <form method="post" action="{{ url_for('restore_backup') }}" enctype="multipart/form-data" data-confirm="Restore this backup and replace all current BrainClaw data?">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input class="form-control mb-3" type="file" name="backup_file" accept=".zip" required>
+                    <button class="btn btn-warning"><i class="fa-solid fa-upload me-1"></i>Restore backup</button>
+                  </form>
+                </div>
+              </div>
+              <div class="col-12">
+                <div class="panel p-3">
+                  <div class="d-flex align-items-center justify-content-between mb-2">
+                    <h2 class="h5 mb-0"><i class="fa-solid fa-clock-rotate-left me-2 icon-muted"></i>Saved backups</h2>
+                    <span class="badge text-bg-secondary">{{ backups|length }} files</span>
+                  </div>
+                  <div class="table-responsive">
+                    <table class="table table-hover align-middle mb-0">
+                      <thead><tr><th>Backup file</th><th>Created</th><th class="text-end">Size</th><th class="text-end">Actions</th></tr></thead>
+                      <tbody>
+                      {% for backup in backups %}
+                        <tr>
+                          <td class="secret-box">{{ backup.name }}</td>
+                          <td>{{ backup.created_at }}</td>
+                          <td class="text-end">{{ "%.2f"|format(backup.size_mb) }} MB</td>
+                          <td class="text-end">
+                            <a class="btn btn-sm btn-outline-light" href="{{ url_for('get_backup', filename=backup.name) }}"><i class="fa-solid fa-download me-1"></i>Download</a>
+                            <form class="d-inline" method="post" action="{{ url_for('delete_backup', filename=backup.name) }}" data-confirm="Delete this backup zip from disk?">
+                              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                              <button class="btn btn-sm btn-outline-danger"><i class="fa-solid fa-trash me-1"></i>Delete</button>
+                            </form>
+                          </td>
+                        </tr>
+                      {% else %}
+                        <tr><td colspan="4" class="text-center text-secondary py-4">No server-side backups saved yet.</td></tr>
+                      {% endfor %}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+            """,
+            data_dir=data_dir,
+            sqlite_path=sqlite_path,
+            index_dir=index_dir,
+            upload_dir=upload_dir,
+            backup_dir=backup_dir,
+            backups=backups,
+            vector_count=faiss_store.vector_count,
+        )
+
+    @app.route("/backup/create", methods=["POST"])
+    @login_required
+    def create_backup():
+        if not validate_csrf():
+            flash("Invalid session token.", "danger")
+            return redirect(url_for("backup_restore"))
+        try:
+            backup_path = create_backup_file(settings)
+            flash(f"Backup saved on server: {backup_path.name}", "success")
+        except Exception as exc:
+            flash(f"Backup failed: {escape(str(exc))}", "danger")
+        return redirect(url_for("backup_restore"))
+
+    @app.route("/backup/files/<path:filename>", methods=["GET"])
+    @login_required
+    def get_backup(filename: str):
+        try:
+            backup_name = safe_backup_name(filename)
+            backup_path = server_backup_dir(settings) / backup_name
+            if not backup_path.exists() or not backup_path.is_file():
+                raise ValueError("Backup file was not found.")
+        except ValueError as exc:
+            flash(str(exc), "danger")
+            return redirect(url_for("backup_restore"))
+        return send_file(
+            backup_path,
+            as_attachment=True,
+            download_name=backup_path.name,
+            mimetype="application/zip",
+        )
+
+    @app.route("/backup/files/<path:filename>/delete", methods=["POST"])
+    @login_required
+    def delete_backup(filename: str):
+        if not validate_csrf():
+            flash("Invalid session token.", "danger")
+            return redirect(url_for("backup_restore"))
+        try:
+            backup_name = safe_backup_name(filename)
+            backup_path = server_backup_dir(settings) / backup_name
+            if not backup_path.exists() or not backup_path.is_file():
+                raise ValueError("Backup file was not found.")
+            backup_path.unlink()
+            flash(f"Deleted backup: {backup_name}", "success")
+        except Exception as exc:
+            flash(f"Delete failed: {escape(str(exc))}", "danger")
+        return redirect(url_for("backup_restore"))
+
+    @app.route("/backup/restore", methods=["POST"])
+    @login_required
+    def restore_backup():
+        if not validate_csrf():
+            flash("Invalid session token.", "danger")
+            return redirect(url_for("backup_restore"))
+        backup_file = request.files.get("backup_file")
+        if backup_file is None or not backup_file.filename:
+            flash("Backup zip is required.", "danger")
+            return redirect(url_for("backup_restore"))
+        try:
+            with tempfile.TemporaryDirectory(prefix="brainclaw-restore-") as tmpdir:
+                tmp_path = Path(tmpdir)
+                archive_path = tmp_path / "backup.zip"
+                backup_file.save(archive_path)
+                with zipfile.ZipFile(archive_path) as archive:
+                    safe_zip_members(archive)
+                    if BACKUP_MANIFEST not in archive.namelist():
+                        raise ValueError("Backup manifest is missing.")
+                    archive.extractall(tmp_path / "extract")
+                restored_data = tmp_path / "extract" / "data"
+                if not restored_data.exists() or not restored_data.is_dir():
+                    raise ValueError("Backup does not contain a data directory.")
+                data_dir = Path(settings.data_dir)
+                backup_dir = server_backup_dir(settings)
+                preserved_backups = tmp_path / "preserved-backups"
+                if backup_dir.exists():
+                    shutil.copytree(backup_dir, preserved_backups)
+                if data_dir.exists():
+                    shutil.rmtree(data_dir)
+                shutil.copytree(restored_data, data_dir)
+                if preserved_backups.exists():
+                    restored_backup_dir = server_backup_dir(settings)
+                    if restored_backup_dir.exists():
+                        shutil.rmtree(restored_backup_dir)
+                    shutil.copytree(preserved_backups, restored_backup_dir)
+                Path(settings.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(settings.index_dir).mkdir(parents=True, exist_ok=True)
+                Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+            db.init_schema()
+            faiss_store.reload()
+            session.clear()
+            flash("Backup restored. BrainClaw data and FAISS indexes were reloaded. Sign in with the restored admin account.", "success")
+            return redirect(url_for("login" if db.admin_is_configured() else "setup"))
+        except Exception as exc:
+            flash(f"Restore failed: {escape(str(exc))}", "danger")
+        return redirect(url_for("backup_restore"))
+
+    @app.route("/backup/purge", methods=["POST"])
+    @login_required
+    def purge_data():
+        if not validate_csrf():
+            flash("Invalid session token.", "danger")
+            return redirect(url_for("backup_restore"))
+        if request.form.get("confirmation") != "PURGE":
+            flash("Type PURGE to confirm data purge.", "warning")
+            return redirect(url_for("backup_restore"))
+        data_dir = Path(settings.data_dir)
+        backup_dir = server_backup_dir(settings)
+        preserved_backups = Path(tempfile.mkdtemp(prefix="brainclaw-backups-"))
+        copied_backups = preserved_backups / "backups"
+        if backup_dir.exists():
+            shutil.copytree(backup_dir, copied_backups)
+        if data_dir.exists():
+            shutil.rmtree(data_dir)
+        data_dir.mkdir(parents=True, exist_ok=True)
+        if copied_backups.exists():
+            shutil.copytree(copied_backups, server_backup_dir(settings), dirs_exist_ok=True)
+        shutil.rmtree(preserved_backups, ignore_errors=True)
+        Path(settings.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(settings.index_dir).mkdir(parents=True, exist_ok=True)
+        Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+        db.init_schema()
+        faiss_store.reload()
+        session.clear()
+        flash("All BrainClaw data was purged. Create a new admin account to continue.", "warning")
+        return redirect(url_for("setup"))
 
     @app.route("/query", methods=["GET", "POST"])
     @login_required
@@ -699,7 +1136,7 @@ LIMIT 50;</pre>
                       <thead><tr><th>ID</th><th>Agent</th><th>Workspace</th><th>Content</th><th></th></tr></thead>
                       <tbody>
                       {% for item in recent_memories %}
-                        <tr>
+                        <tr class="clickable-row" data-memory-modal-target="memoryModal{{ item.id }}" title="Double-click to view full memory">
                           <td>{{ item.id }}</td>
                           <td>{{ item.agent_id }}</td>
                           <td>{{ item.workspace }}</td>
@@ -720,6 +1157,35 @@ LIMIT 50;</pre>
                       </tbody>
                     </table>
                   </div>
+                  {% for item in recent_memories %}
+                  <div class="modal fade" id="memoryModal{{ item.id }}" tabindex="-1" aria-labelledby="memoryModal{{ item.id }}Title" aria-hidden="true">
+                    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                      <div class="modal-content panel">
+                        <div class="modal-header">
+                          <h5 class="modal-title" id="memoryModal{{ item.id }}Title"><i class="fa-solid fa-layer-group me-2 icon-muted"></i>Memory #{{ item.id }}</h5>
+                          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                          <div class="row g-2 small text-secondary mb-3">
+                            <div class="col-md-3"><span class="text-light">Agent:</span> {{ item.agent_id }}</div>
+                            <div class="col-md-3"><span class="text-light">Workspace:</span> {{ item.workspace }}</div>
+                            <div class="col-md-3"><span class="text-light">Type:</span> {{ item.memory_type }}</div>
+                            <div class="col-md-3"><span class="text-light">Source:</span> {{ item.source }}</div>
+                            <div class="col-md-3"><span class="text-light">Importance:</span> {{ item.importance }}</div>
+                            <div class="col-md-3"><span class="text-light">Created:</span> {{ item.created_at }}</div>
+                            <div class="col-md-3"><span class="text-light">Updated:</span> {{ item.updated_at }}</div>
+                            <div class="col-md-3"><span class="text-light">Tags:</span> {{ item.tags|join(", ") }}</div>
+                          </div>
+                          <div class="memory-full-content p-3 rounded border bg-dark">{{ item.content }}</div>
+                        </div>
+                        <div class="modal-footer">
+                          <a class="btn btn-outline-light" href="{{ url_for('edit_memory', memory_id=item.id, agent_id=item.agent_id, workspace=item.workspace) }}"><i class="fa-solid fa-pen-to-square me-1"></i>Edit</a>
+                          <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  {% endfor %}
                   <nav class="mt-3">
                     <ul class="pagination mb-0">
                       <li class="page-item {% if memory_page <= 1 %}disabled{% endif %}"><a class="page-link" href="{{ ingest_page_url(memory_page=memory_page-1) }}">Previous</a></li>
@@ -823,7 +1289,7 @@ LIMIT 50;</pre>
                   <thead><tr><th>ID</th><th>Agent</th><th>Workspace</th><th>Type</th><th>Source</th><th>Content</th><th>Updated</th><th></th></tr></thead>
                   <tbody>
                   {% for item in items %}
-                    <tr>
+                    <tr class="clickable-row" data-memory-modal-target="memoryModal{{ item.id }}" title="Double-click to view full memory">
                       <td>{{ item.id }}</td>
                       <td>{{ item.agent_id }}</td>
                       <td>{{ item.workspace }}</td>
@@ -847,6 +1313,35 @@ LIMIT 50;</pre>
                   </tbody>
                 </table>
               </div>
+              {% for item in items %}
+              <div class="modal fade" id="memoryModal{{ item.id }}" tabindex="-1" aria-labelledby="memoryModal{{ item.id }}Title" aria-hidden="true">
+                <div class="modal-dialog modal-xl modal-dialog-scrollable">
+                  <div class="modal-content panel">
+                    <div class="modal-header">
+                      <h5 class="modal-title" id="memoryModal{{ item.id }}Title"><i class="fa-solid fa-layer-group me-2 icon-muted"></i>Memory #{{ item.id }}</h5>
+                      <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                    </div>
+                    <div class="modal-body">
+                      <div class="row g-2 small text-secondary mb-3">
+                        <div class="col-md-3"><span class="text-light">Agent:</span> {{ item.agent_id }}</div>
+                        <div class="col-md-3"><span class="text-light">Workspace:</span> {{ item.workspace }}</div>
+                        <div class="col-md-3"><span class="text-light">Type:</span> {{ item.memory_type }}</div>
+                        <div class="col-md-3"><span class="text-light">Source:</span> {{ item.source }}</div>
+                        <div class="col-md-3"><span class="text-light">Importance:</span> {{ item.importance }}</div>
+                        <div class="col-md-3"><span class="text-light">Created:</span> {{ item.created_at }}</div>
+                        <div class="col-md-3"><span class="text-light">Updated:</span> {{ item.updated_at }}</div>
+                        <div class="col-md-3"><span class="text-light">Tags:</span> {{ item.tags|join(", ") }}</div>
+                      </div>
+                      <div class="memory-full-content p-3 rounded border bg-dark">{{ item.content }}</div>
+                    </div>
+                    <div class="modal-footer">
+                      <a class="btn btn-outline-light" href="{{ url_for('edit_memory', memory_id=item.id, agent_id=item.agent_id, workspace=item.workspace) }}"><i class="fa-solid fa-pen-to-square me-1"></i>Edit</a>
+                      <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              {% endfor %}
               <nav class="mt-3">
                 <ul class="pagination mb-0">
                   <li class="page-item {% if page <= 1 %}disabled{% endif %}"><a class="page-link" href="{{ page_url(page-1) }}">Previous</a></li>
@@ -993,9 +1488,6 @@ LIMIT 50;</pre>
               <div class="col-lg-4">
                 <div class="panel p-3">
                   <h1 class="h4"><i class="fa-solid fa-key me-2 icon-muted"></i>Create API Key</h1>
-                  {% if created_key %}
-                    <div class="alert alert-warning secret-box">{{ created_key }}</div>
-                  {% endif %}
                   <form method="post">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                     <div class="mb-2"><label class="form-label"><i class="fa-solid fa-tag me-1"></i>Name</label><input class="form-control" name="name" required></div>

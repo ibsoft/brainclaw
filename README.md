@@ -56,6 +56,10 @@ Admin usernames must be 3-64 characters and may contain letters, numbers, `.`, `
 
 Admin tables are paginated. The default page size is 50 rows; most table URLs accept `page` and `per_page` query parameters.
 
+The top menu includes `Backup` for exporting, restoring, or purging BrainClaw data. `Create backup` saves a zip under `data/backups`, and the saved backups table lets you download or delete each zip from disk. A backup zip contains the SQLite database, FAISS indexes, ID maps, and uploaded document storage so the same memories can be restored on another system. Existing server-side backup zips are not included inside new backups and are preserved during restore/purge.
+
+Double-click a memory table row in the admin UI to open the full formatted memory content in a modal.
+
 Health check:
 
 ```bash
@@ -418,6 +422,80 @@ The ingest screen also shows recent memories and documents:
 - Memories can be edited or deleted from the admin UI.
 - Documents can be deleted from future search results. To replace a document, delete it and upload the replacement.
 - Upload/ingest forms show a spinner and disable submit buttons while embedding and indexing are running.
+
+## OpenClaw Prompt Persistence
+
+`OpenClaw.md` is intended to be installed as OpenClaw's persistent system prompt or startup instruction file. Pasting it into a normal chat is not enough if `/new` clears chat context.
+
+Install the prompt and a starter environment file:
+
+```bash
+sudo ./scripts/install-openclaw-prompt.sh
+```
+
+The installer deploys:
+
+- `/etc/openclaw/OpenClaw.md`
+- `/etc/openclaw/defaults/AGENTS.md`
+- `/etc/openclaw/defaults/BOOTSTRAP.md`
+- `/etc/openclaw/defaults/HEARTBEAT.md`
+- `/etc/openclaw/defaults/IDENTITY.md`
+- `/etc/openclaw/defaults/MEMORY.md`
+- `/etc/openclaw/defaults/SOUL.md`
+- `/etc/openclaw/defaults/TOOLS.md`
+- `/etc/openclaw/defaults/USER.md`
+
+It also injects the same files into the OpenClaw workspace. By default the workspace target is the current repo directory. To inject another workspace:
+
+```bash
+sudo OPENCLAW_WORKSPACE_DIR=/path/to/openclaw/workspace \
+  ./scripts/install-openclaw-prompt.sh
+```
+
+Then edit:
+
+```bash
+sudo nano /etc/openclaw/environment.conf
+```
+
+Set:
+
+```bash
+BRAINCLAW_URL=http://127.0.0.1:8757
+BRAINCLAW_API_KEY=your-brainclaw-api-key
+OPENCLAW_AGENT_ID=Kim
+OPENCLAW_WORKSPACE=Kims-workspace
+OPENCLAW_SYSTEM_PROMPT=/etc/openclaw/OpenClaw.md
+OPENCLAW_DEFAULTS_DIR=/etc/openclaw/defaults
+OPENCLAW_WORKSPACE_DIR=/path/to/openclaw/workspace
+```
+
+OpenClaw itself must be configured to load `/etc/openclaw/OpenClaw.md` as a system prompt on every session, including after `/new`. If OpenClaw does not reload that file after `/new`, it will forget the BrainClaw rules and may fall back to its own local memory mechanism.
+
+The installer also creates a generic wrapper:
+
+```bash
+/usr/local/bin/openclaw-brainclaw
+```
+
+Use it to start your OpenClaw command with BrainClaw variables loaded:
+
+```bash
+openclaw-brainclaw <your-openclaw-command> [args...]
+```
+
+The wrapper exports:
+
+- `BRAINCLAW_URL`
+- `BRAINCLAW_API_KEY`
+- `OPENCLAW_AGENT_ID`
+- `OPENCLAW_WORKSPACE`
+- `OPENCLAW_SYSTEM_PROMPT`
+- `OPENCLAW_PROMPT_FILE`
+- `OPENCLAW_INSTRUCTIONS_FILE`
+- `SYSTEM_PROMPT_FILE`
+
+OpenClaw must consume one of the prompt file variables or be configured separately to load `/etc/openclaw/OpenClaw.md`. The wrapper cannot force prompt loading if OpenClaw ignores all prompt-file environment variables.
 
 ## Security Notes
 
