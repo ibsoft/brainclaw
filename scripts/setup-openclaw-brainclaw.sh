@@ -50,8 +50,8 @@ banner() {
   cat <<EOF
 ${BLUE}${BOLD}
 ╔══════════════════════════════════════════════════════════╗
-║              OpenClaw + BrainClaw Setup                 ║
-║              Kali / Python 3.13 compatible              ║
+║              OpenClaw + BrainClaw Setup                  ║
+║              Ioannis (Yannis) A. Bouhras                 ║
 ╚══════════════════════════════════════════════════════════╝
 ${RESET}
 EOF
