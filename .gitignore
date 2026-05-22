@@ -3,6 +3,10 @@ __pycache__/
 data/indexes/
 data/uploads/
 data/backups/
+data/*.sqlite3
+data/*.sqlite3-*
+data/*.index
+data/id_map.json
 *.py[codz]
 *$py.class
 
