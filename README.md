@@ -148,6 +148,104 @@ curl -H "X-API-Key: $(sudo sed -n 's/^MEMORY_API_KEY=//p' /opt/brainclaw/.env)" 
 
 The unit runs as the `brainclaw` system user, binds to `127.0.0.1`, applies systemd hardening, and only grants write access to `/opt/brainclaw/data`.
 
+## All-in-One OpenClaw + BrainClaw Setup
+
+`scripts/setup-openclaw-brainclaw.sh` is an interactive Linux bootstrap script. It installs OS dependencies, creates an `openclaw` Linux user, asks you to set that user's password, installs OpenClaw under that user's home directory, clones `ibsoft/brainclaw`, installs BrainClaw as a systemd service, installs the OpenClaw prompt/default files, and attempts to enable the OpenClaw gateway service.
+
+Supported targets:
+
+- Ubuntu on WSL
+- Kali Linux on WSL
+- native Ubuntu/Debian/Kali Linux with systemd
+
+WSL requirement: systemd must be enabled. In WSL, check:
+
+```bash
+ps -p 1 -o comm=
+```
+
+It should print `systemd`. If not, create or edit `/etc/wsl.conf`:
+
+```ini
+[boot]
+systemd=true
+```
+
+Then restart WSL from Windows PowerShell:
+
+```powershell
+wsl --shutdown
+```
+
+Run the all-in-one installer:
+
+```bash
+git clone https://github.com/ibsoft/brainclaw.git
+cd brainclaw
+sudo bash scripts/setup-openclaw-brainclaw.sh
+```
+
+The script will prompt:
+
+```text
+Continue? [y/N]
+Set Linux password for openclaw:
+Confirm password:
+```
+
+Default paths:
+
+```text
+OpenClaw user:       openclaw
+OpenClaw install:    /home/openclaw/openclaw
+OpenClaw npm prefix: /home/openclaw/openclaw/npm
+OpenClaw workspace:  /home/openclaw/workspace
+BrainClaw install:   /opt/brainclaw
+BrainClaw service:   brainclaw
+BrainClaw admin:     http://127.0.0.1:8757/admin
+```
+
+Override example:
+
+```bash
+sudo OPENCLAW_USER=myopenclaw \
+  OPENCLAW_AGENT_ID=Kim \
+  OPENCLAW_WORKSPACE=Kims-workspace \
+  BRAINCLAW_DIR=/opt/brainclaw \
+  bash scripts/setup-openclaw-brainclaw.sh
+```
+
+Post-install checks:
+
+```bash
+sudo systemctl status brainclaw
+curl -H "X-API-Key: $(sudo sed -n 's/^MEMORY_API_KEY=//p' /opt/brainclaw/.env)" \
+  http://127.0.0.1:8757/health
+sudo -iu openclaw /home/openclaw/openclaw/npm/bin/openclaw gateway status
+```
+
+Start OpenClaw with BrainClaw environment loaded:
+
+```bash
+sudo -iu openclaw
+openclaw-brainclaw /home/openclaw/openclaw/npm/bin/openclaw
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8757/admin
+```
+
+Complete the BrainClaw first-run admin setup in the browser.
+
+Notes:
+
+- The script currently targets apt-based Linux systems.
+- OpenClaw is installed with npm under `/home/openclaw/openclaw/npm`, not into a system-global npm prefix.
+- BrainClaw runs as its own `brainclaw` service user by default.
+- On WSL, services only run while the WSL distro is running.
+
 ## API
 
 All endpoints require:
