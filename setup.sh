@@ -1256,6 +1256,18 @@ PY"
   repair_service
 }
 
+inject_openclaw_only() {
+  banner
+  load_brainclaw_env_settings
+  configure_brainclaw_bind
+  install_dependencies
+  create_openclaw_user
+  install_openclaw
+  install_prompt_integration
+  inject_brainclaw_into_openclaw_user
+  ok "BrainClaw injection into OpenClaw completed"
+}
+
 usage() {
   cat <<EOF
 Usage:
@@ -1264,6 +1276,7 @@ Usage:
   sudo ./setup.sh repair-service
   sudo ./setup.sh repair-venv
   sudo ./setup.sh repair-permissions
+  sudo ./setup.sh inject-openclaw
 
 Install is the default command.
 
@@ -1303,6 +1316,7 @@ install_stack() {
   reset_installed_brainclaw_data
   install_brainclaw_service
   install_prompt_integration
+  inject_brainclaw_into_openclaw_user
   setup_openclaw_gateway
   test_brainclaw_service
   print_summary
@@ -1334,6 +1348,10 @@ main() {
     repair-permissions)
       shift || true
       repair_brainclaw_permissions "$@"
+      ;;
+    inject-openclaw)
+      shift || true
+      inject_openclaw_only "$@"
       ;;
     -h|--help|help)
       usage
