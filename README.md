@@ -215,7 +215,7 @@ Default paths:
 OpenClaw user:       openclaw
 OpenClaw install:    /home/openclaw/openclaw
 OpenClaw npm prefix: /home/openclaw/openclaw/npm
-OpenClaw workspace:  /home/openclaw/workspace
+OpenClaw workspace:  /home/openclaw/.openclaw/workspace
 BrainClaw install:   /opt/brainclaw
 BrainClaw service:   brainclaw
 BrainClaw bind:      127.0.0.1
@@ -570,7 +570,7 @@ The installer deploys:
 - `/etc/openclaw/defaults/TOOLS.md`
 - `/etc/openclaw/defaults/USER.md`
 
-It also injects the same files into the OpenClaw workspace. By default the workspace target is the current repo directory. To inject another workspace:
+It also injects the same files into the OpenClaw workspace. In the all-in-one setup, the default workspace target is `/home/openclaw/.openclaw/workspace`. To inject another workspace:
 
 ```bash
 sudo OPENCLAW_WORKSPACE_DIR=/path/to/openclaw/workspace \
@@ -592,7 +592,7 @@ OPENCLAW_AGENT_ID=BrainClaw
 OPENCLAW_WORKSPACE=BrainClaws-workspace
 OPENCLAW_SYSTEM_PROMPT=/etc/openclaw/OpenClaw.md
 OPENCLAW_DEFAULTS_DIR=/etc/openclaw/defaults
-OPENCLAW_WORKSPACE_DIR=/path/to/openclaw/workspace
+OPENCLAW_WORKSPACE_DIR=/home/openclaw/.openclaw/workspace
 ```
 
 OpenClaw itself must be configured to load `/etc/openclaw/OpenClaw.md` as a system prompt on every session, including after `/new`. If OpenClaw does not reload that file after `/new`, it will forget the BrainClaw rules and may fall back to its own local memory mechanism.
