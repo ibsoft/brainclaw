@@ -46,6 +46,56 @@ BASE_TEMPLATE = """
     .auth-card { width: min(100%, 30rem); }
     .clickable-row { cursor: pointer; }
     .memory-full-content { white-space: pre-wrap; max-height: 55vh; overflow: auto; }
+    .log-modal .modal-content {
+      background: linear-gradient(180deg, #172033 0%, #121b2d 100%);
+      border-color: #3b4a63;
+      box-shadow: 0 1.5rem 4rem rgba(2, 6, 23, .55);
+    }
+    .log-modal .modal-header { border-bottom-color: #334155; }
+    .log-modal .modal-footer { border-top-color: #334155; }
+    .log-modal-title { min-width: 0; }
+    .log-modal-title .modal-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .log-badge-row { display: flex; flex-wrap: wrap; gap: .5rem; }
+    .log-badge {
+      display: inline-flex; align-items: center; gap: .4rem;
+      border: 1px solid #3b4a63; border-radius: 999px;
+      padding: .4rem .7rem; background: rgba(15, 23, 42, .72);
+      color: #dbeafe; font-size: .82rem; line-height: 1;
+    }
+    .log-badge strong { color: #f8fafc; font-weight: 650; }
+    .log-badge-success { border-color: rgba(34, 197, 94, .45); color: #bbf7d0; }
+    .log-badge-warning { border-color: rgba(234, 179, 8, .55); color: #fef3c7; }
+    .log-badge-danger { border-color: rgba(248, 113, 113, .55); color: #fecaca; }
+    .log-badge-info { border-color: rgba(96, 165, 250, .55); color: #bfdbfe; }
+    .log-section-title {
+      color: #93c5fd; font-size: .74rem; font-weight: 700;
+      letter-spacing: .08em; text-transform: uppercase;
+    }
+    .log-field-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr));
+      gap: .75rem;
+    }
+    .log-field {
+      border: 1px solid #334155; border-radius: .5rem;
+      background: rgba(15, 23, 42, .5); padding: .75rem;
+      min-width: 0;
+    }
+    .log-field-key {
+      color: #93c5fd; font-size: .72rem; font-weight: 700;
+      letter-spacing: .06em; text-transform: uppercase; margin-bottom: .35rem;
+    }
+    .log-field-value {
+      color: #e2e8f0; overflow-wrap: anywhere;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .86rem; white-space: pre-wrap;
+    }
+    .log-json {
+      white-space: pre-wrap; max-height: 42vh; overflow: auto;
+      border: 1px solid #334155; border-radius: .5rem;
+      background: #020617; color: #fde68a; padding: 1rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: .84rem;
+    }
     .loading-overlay {
       position: fixed; inset: 0; display: none; place-items: center; z-index: 2000;
       background: rgba(2, 6, 23, .72); backdrop-filter: blur(3px);
@@ -466,6 +516,40 @@ def load_log_entries(settings: Any, query: str | None = None, max_entries: int =
                 payload = {"timestamp": "", "level": "ERROR", "logger": path.name, "event": "malformed_log_payload", "raw": line}
             payload["_file"] = path.name
             payload["_raw"] = line
+            level = str(payload.get("level") or "").upper()
+            if level in {"ERROR", "CRITICAL"}:
+                payload["_level_class"] = "log-badge-danger"
+            elif level == "WARNING":
+                payload["_level_class"] = "log-badge-warning"
+            elif level == "INFO":
+                payload["_level_class"] = "log-badge-info"
+            else:
+                payload["_level_class"] = "log-badge-success"
+            try:
+                status_code = int(payload.get("status_code"))
+            except (TypeError, ValueError):
+                payload["_status_class"] = ""
+            else:
+                if status_code >= 500:
+                    payload["_status_class"] = "log-badge-danger"
+                elif status_code >= 400:
+                    payload["_status_class"] = "log-badge-warning"
+                else:
+                    payload["_status_class"] = "log-badge-success"
+            payload["_field_items"] = [
+                (
+                    str(key),
+                    json.dumps(value, indent=2, ensure_ascii=False, default=str) if isinstance(value, (dict, list)) else value,
+                )
+                for key, value in sorted(payload.items(), key=lambda item: str(item[0]))
+                if not str(key).startswith("_")
+            ]
+            payload["_pretty"] = json.dumps(
+                {key: value for key, value in payload.items() if not str(key).startswith("_")},
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            )
             entries.append(payload)
             if len(entries) >= max_entries:
                 return entries
@@ -1034,15 +1118,44 @@ def create_admin_app(settings: Any, db: Database, memory_service: MemoryService,
               </nav>
             </div>
             {% for item in logs %}
-            <div class="modal fade" id="logModal{{ loop.index }}" tabindex="-1" aria-hidden="true">
-              <div class="modal-dialog modal-xl modal-dialog-centered">
+            <div class="modal fade log-modal" id="logModal{{ loop.index }}" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-xl modal-dialog-centered modal-dialog-scrollable">
                 <div class="modal-content panel">
                   <div class="modal-header">
-                    <h5 class="modal-title"><i class="fa-solid fa-scroll me-2 icon-muted"></i>{{ item.event or 'Log entry' }}</h5>
+                    <div class="log-modal-title">
+                      <div class="log-section-title mb-1">Log entry</div>
+                      <h5 class="modal-title"><i class="fa-solid fa-scroll me-2 icon-muted"></i>{{ item.event or item.message or 'Log entry' }}</h5>
+                    </div>
                     <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
                   </div>
                   <div class="modal-body">
-                    <pre class="secret-box text-warning bg-dark border rounded p-3 mb-0" style="white-space: pre-wrap; max-height: 65vh; overflow: auto;">{{ item._raw }}</pre>
+                    <div class="log-badge-row mb-3">
+                      <span class="log-badge {{ item._level_class }}">
+                        <i class="fa-solid fa-signal"></i><strong>{{ item.level or 'UNKNOWN' }}</strong>
+                      </span>
+                      {% if item.timestamp %}<span class="log-badge"><i class="fa-regular fa-clock"></i>{{ item.timestamp }}</span>{% endif %}
+                      {% if item.logger %}<span class="log-badge"><i class="fa-solid fa-tag"></i>{{ item.logger }}</span>{% endif %}
+                      {% if item.method or item.path %}<span class="log-badge log-badge-info"><i class="fa-solid fa-route"></i><strong>{{ item.method or 'HTTP' }}</strong>{{ item.path or '' }}</span>{% endif %}
+                      {% if item.status_code %}<span class="log-badge {{ item._status_class }}"><i class="fa-solid fa-circle-nodes"></i>Status <strong>{{ item.status_code }}</strong></span>{% endif %}
+                      {% if item.duration_ms %}<span class="log-badge"><i class="fa-solid fa-gauge-high"></i>{{ item.duration_ms }} ms</span>{% endif %}
+                      {% if item.client %}<span class="log-badge"><i class="fa-solid fa-network-wired"></i>{{ item.client }}</span>{% endif %}
+                      <span class="log-badge"><i class="fa-regular fa-file-lines"></i>{{ item._file }}</span>
+                    </div>
+                    <div class="log-section-title mb-2">Fields</div>
+                    <div class="log-field-grid mb-3">
+                      {% for key, value in item._field_items %}
+                        <div class="log-field">
+                          <div class="log-field-key">{{ key }}</div>
+                          <div class="log-field-value">{{ value }}</div>
+                        </div>
+                      {% endfor %}
+                    </div>
+                    <div class="log-section-title mb-2">Formatted JSON</div>
+                    <pre class="log-json mb-0">{{ item._pretty or item._raw }}</pre>
+                  </div>
+                  <div class="modal-footer">
+                    <button type="button" class="btn btn-outline-light" data-copy-secret="{{ item._raw }}"><i class="fa-solid fa-copy me-1"></i>Copy raw</button>
+                    <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Close</button>
                   </div>
                 </div>
               </div>

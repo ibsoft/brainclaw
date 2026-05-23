@@ -6,7 +6,7 @@ OPENCLAW_GROUP="${OPENCLAW_GROUP:-$OPENCLAW_USER}"
 OPENCLAW_HOME="${OPENCLAW_HOME:-/home/${OPENCLAW_USER}}"
 OPENCLAW_INSTALL_DIR="${OPENCLAW_INSTALL_DIR:-${OPENCLAW_HOME}/.openclaw}"
 OPENCLAW_NPM_PREFIX="${OPENCLAW_NPM_PREFIX:-${OPENCLAW_INSTALL_DIR}/npm}"
-OPENCLAW_WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-${OPENCLAW_HOME}/workspace}"
+OPENCLAW_WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-${OPENCLAW_INSTALL_DIR}/workspace}"
 OPENCLAW_AGENT_ID="${OPENCLAW_AGENT_ID:-Kim}"
 OPENCLAW_WORKSPACE="${OPENCLAW_WORKSPACE:-Kims-workspace}"
 
@@ -622,6 +622,7 @@ patch_brainclaw_requirements() {
     cat > "${req}" <<'EOF'
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
+anyio>=4.7.0,<5
 pydantic>=2.9.0
 python-dotenv>=1.0.1
 requests>=2.32.0
@@ -648,6 +649,7 @@ EOF
     -e 's/^pydantic==.*/pydantic>=2.9.0/' \
     -e 's/^fastapi==.*/fastapi>=0.115.0/' \
     -e 's/^uvicorn==.*/uvicorn>=0.30.0/' \
+    -e 's/^anyio==.*/anyio>=4.7.0,<5/' \
     -e 's/^sentence-transformers==.*/sentence-transformers>=3.3.0/' \
     -e 's/^transformers==.*/transformers>=4.46.0/' \
     -e 's/^python-dotenv==.*/python-dotenv>=1.0.1/' \
@@ -655,6 +657,10 @@ EOF
     -e 's/^pypdf==.*/pypdf>=5.0.0/' \
     -e 's/^python-docx==.*/python-docx>=1.1.2/' \
     "${req}"
+
+  if ! grep -q '^anyio[<=>!~]' "${req}"; then
+    printf '\nanyio>=4.7.0,<5\n' >> "${req}"
+  fi
 
   ok "requirements.txt patched for conservative CPU wheels. Backup created."
 }
@@ -1245,10 +1251,12 @@ repair_venv() {
 
   step "Testing native imports"
   sudo -u "${BRAINCLAW_SERVICE_NAME}" -H bash -lc "cd '${BRAINCLAW_DIR}' && '${BRAINCLAW_DIR}/.venv/bin/python' - <<'PY'
+import anyio
+import anyio._backends._asyncio
 import faiss
 import numpy
 import torch
-print('native imports ok')
+print('runtime imports ok')
 PY"
 
   load_brainclaw_env_settings
