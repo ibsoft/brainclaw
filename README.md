@@ -150,7 +150,7 @@ The unit runs as the `brainclaw` system user, binds to `127.0.0.1`, applies syst
 
 ## All-in-One OpenClaw + BrainClaw Setup
 
-`scripts/setup-openclaw-brainclaw.sh` is an interactive Linux bootstrap script. It installs OS dependencies, creates an `openclaw` Linux user, asks you to set that user's password, installs OpenClaw under that user's home directory, clones `ibsoft/brainclaw`, installs BrainClaw as a systemd service, installs the OpenClaw prompt/default files, and attempts to enable the OpenClaw gateway service.
+`setup.sh` is an interactive Linux bootstrap script. It installs OS dependencies, creates an `openclaw` Linux user, asks you to set that user's password, installs OpenClaw under that user's home directory, installs BrainClaw from this checkout as a systemd service, installs the OpenClaw prompt/default files, and attempts to enable the OpenClaw gateway service.
 
 Supported targets:
 
@@ -182,7 +182,7 @@ Run the all-in-one installer:
 ```bash
 git clone https://github.com/ibsoft/brainclaw.git
 cd brainclaw
-sudo bash scripts/setup-openclaw-brainclaw.sh
+sudo ./setup.sh install
 ```
 
 The script will prompt:
@@ -212,7 +212,14 @@ sudo OPENCLAW_USER=myopenclaw \
   OPENCLAW_AGENT_ID=Kim \
   OPENCLAW_WORKSPACE=Kims-workspace \
   BRAINCLAW_DIR=/opt/brainclaw \
-  bash scripts/setup-openclaw-brainclaw.sh
+  ./setup.sh install
+```
+
+Uninstall the service:
+
+```bash
+sudo ./setup.sh uninstall
+sudo REMOVE_DATA=1 REMOVE_OPENCLAW=1 REMOVE_OPENCLAW_USER=1 ./setup.sh uninstall
 ```
 
 Post-install checks:

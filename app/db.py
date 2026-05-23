@@ -93,6 +93,7 @@ class Database:
                     name TEXT NOT NULL,
                     key_hash TEXT NOT NULL UNIQUE,
                     key_prefix TEXT NOT NULL,
+                    key_secret TEXT,
                     role TEXT NOT NULL DEFAULT 'agent',
                     agent_id TEXT,
                     workspace TEXT,
@@ -125,6 +126,9 @@ class Database:
                     ON api_keys(agent_id, workspace, active);
                 """
             )
+            columns = {row["name"] for row in conn.execute("PRAGMA table_info(api_keys)").fetchall()}
+            if "key_secret" not in columns:
+                conn.execute("ALTER TABLE api_keys ADD COLUMN key_secret TEXT")
 
     def create_memory(self, payload: dict[str, Any], chunks: list[str]) -> int:
         now = utc_now()
@@ -485,15 +489,15 @@ class Database:
                 [*values, limit],
             ).fetchall()
 
-    def create_api_key(self, name: str, key_hash: str, key_prefix: str, role: str, agent_id: str | None, workspace: str | None) -> int:
+    def create_api_key(self, name: str, key_hash: str, key_prefix: str, key_secret: str | None, role: str, agent_id: str | None, workspace: str | None) -> int:
         now = utc_now()
         with self.connect() as conn:
             cursor = conn.execute(
                 """
-                INSERT INTO api_keys (name, key_hash, key_prefix, role, agent_id, workspace, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO api_keys (name, key_hash, key_prefix, key_secret, role, agent_id, workspace, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (name, key_hash, key_prefix, role, agent_id, workspace, now),
+                (name, key_hash, key_prefix, key_secret, role, agent_id, workspace, now),
             )
             return int(cursor.lastrowid)
 
@@ -517,7 +521,7 @@ class Database:
         with self.connect() as conn:
             return conn.execute(
                 """
-                SELECT id, name, key_prefix, role, agent_id, workspace, active, created_at, last_used_at
+                SELECT id, name, key_prefix, key_secret, role, agent_id, workspace, active, created_at, last_used_at
                 FROM api_keys
                 ORDER BY active DESC, created_at DESC
                 """

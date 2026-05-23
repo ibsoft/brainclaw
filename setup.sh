@@ -10,7 +10,9 @@ OPENCLAW_WORKSPACE_DIR="${OPENCLAW_WORKSPACE_DIR:-${OPENCLAW_HOME}/workspace}"
 OPENCLAW_AGENT_ID="${OPENCLAW_AGENT_ID:-Kim}"
 OPENCLAW_WORKSPACE="${OPENCLAW_WORKSPACE:-Kims-workspace}"
 
-BRAINCLAW_REPO="${BRAINCLAW_REPO:-https://github.com/ibsoft/brainclaw.git}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BRAINCLAW_SOURCE_DIR="${BRAINCLAW_SOURCE_DIR:-${SCRIPT_DIR}}"
+BRAINCLAW_REPO="${BRAINCLAW_REPO:-}"
 BRAINCLAW_DIR="${BRAINCLAW_DIR:-/opt/brainclaw}"
 BRAINCLAW_SERVICE_NAME="${BRAINCLAW_SERVICE_NAME:-brainclaw}"
 BRAINCLAW_PYTHON_BIN="${BRAINCLAW_PYTHON_BIN:-python3}"
@@ -20,12 +22,15 @@ BRAINCLAW_PORT="${BRAINCLAW_PORT:-8757}"
 NODE_MAJOR="${NODE_MAJOR:-22}"
 ASSUME_YES="${ASSUME_YES:-0}"
 SKIP_OPENCLAW_GATEWAY="${SKIP_OPENCLAW_GATEWAY:-0}"
+REMOVE_DATA="${REMOVE_DATA:-0}"
+REMOVE_OPENCLAW="${REMOVE_OPENCLAW:-0}"
+REMOVE_OPENCLAW_USER="${REMOVE_OPENCLAW_USER:-0}"
 
 export PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT:-180}"
 export PIP_DISABLE_PIP_VERSION_CHECK=1
 export PIP_NO_INPUT=1
 
-if [[ "${EUID}" -ne 0 ]]; then
+if [[ "${EUID}" -ne 0 && ! "${1:-}" =~ ^(-h|--help|help)$ ]]; then
   echo "Run as root: sudo $0" >&2
   exit 1
 fi
@@ -250,15 +255,10 @@ set_openclaw_password_if_supplied() {
   fi
 
   if ! printf '%s:%s\n' "${OPENCLAW_USER}" "${password}" | chpasswd; then
-    warn "Password change failed through chpasswd."
-    passwd -S "${OPENCLAW_USER}" || true
-    passwd -u "${OPENCLAW_USER}" >/dev/null 2>&1 || true
-
-    if ! printf '%s:%s\n' "${OPENCLAW_USER}" "${password}" | chpasswd; then
-      fail "Could not set password for ${OPENCLAW_USER}. Run manually: sudo passwd ${OPENCLAW_USER}"
-    fi
+    fail "Could not set password for ${OPENCLAW_USER}. Run manually: sudo passwd ${OPENCLAW_USER}"
   fi
 
+  passwd -S "${OPENCLAW_USER}" >/dev/null 2>&1 || true
   ok "Linux password configured for ${OPENCLAW_USER}"
 }
 
@@ -338,11 +338,28 @@ install_openclaw() {
 checkout_brainclaw() {
   step "Checking out BrainClaw"
 
-  if [[ -d "${BRAINCLAW_DIR}/.git" ]]; then
-    git -C "${BRAINCLAW_DIR}" pull --ff-only || warn "Git pull failed. Continuing with existing BrainClaw directory."
+  if [[ -n "${BRAINCLAW_REPO}" ]]; then
+    if [[ -d "${BRAINCLAW_DIR}/.git" ]]; then
+      git -C "${BRAINCLAW_DIR}" pull --ff-only || warn "Git pull failed. Continuing with existing BrainClaw directory."
+    else
+      rm -rf "${BRAINCLAW_DIR}"
+      git clone "${BRAINCLAW_REPO}" "${BRAINCLAW_DIR}"
+    fi
   else
-    rm -rf "${BRAINCLAW_DIR}"
-    git clone "${BRAINCLAW_REPO}" "${BRAINCLAW_DIR}"
+    if [[ ! -f "${BRAINCLAW_SOURCE_DIR}/requirements.txt" || ! -d "${BRAINCLAW_SOURCE_DIR}/app" ]]; then
+      fail "BRAINCLAW_SOURCE_DIR does not look like a BrainClaw checkout: ${BRAINCLAW_SOURCE_DIR}"
+    fi
+
+    install -d -m 0750 "${BRAINCLAW_DIR}"
+    rsync -a \
+      --delete \
+      --exclude ".git" \
+      --exclude ".venv" \
+      --exclude "__pycache__" \
+      --exclude "data/backups" \
+      --exclude "data/indexes" \
+      --exclude "data/uploads" \
+      "${BRAINCLAW_SOURCE_DIR}/" "${BRAINCLAW_DIR}/"
   fi
 
   if [[ ! -d "${BRAINCLAW_DIR}" ]]; then
@@ -417,10 +434,19 @@ PY
 
   cat > "${env_file}" <<EOF
 MEMORY_API_KEY=${memory_key}
+ADMIN_SESSION_SECRET=$(openssl rand -hex 32 2>/dev/null || python3 - <<'PY'
+import secrets
+print(secrets.token_hex(32))
+PY
+)
 HOST=127.0.0.1
 PORT=${BRAINCLAW_PORT}
-DATABASE_PATH=${BRAINCLAW_DIR}/data/brainclaw.sqlite3
 DATA_DIR=${BRAINCLAW_DIR}/data
+SQLITE_PATH=${BRAINCLAW_DIR}/data/memory.sqlite3
+FAISS_INDEX_PATH=${BRAINCLAW_DIR}/data/faiss.index
+ID_MAP_PATH=${BRAINCLAW_DIR}/data/id_map.json
+INDEX_DIR=${BRAINCLAW_DIR}/data/indexes
+UPLOAD_DIR=${BRAINCLAW_DIR}/data/uploads
 EOF
 
   chmod 0640 "${env_file}"
@@ -521,8 +547,6 @@ EOF
 install_brainclaw_service() {
   step "Installing BrainClaw service"
 
-  local installer="${BRAINCLAW_DIR}/scripts/install-linux-service.sh"
-
   step "Stopping old BrainClaw service if present"
   systemctl stop "${BRAINCLAW_SERVICE_NAME}" 2>/dev/null || true
 
@@ -530,28 +554,6 @@ install_brainclaw_service() {
   rm -rf "${BRAINCLAW_DIR}/.venv"
 
   patch_brainclaw_requirements_for_py313
-
-  if [[ -f "${installer}" ]]; then
-    step "Running BrainClaw original installer with ${BRAINCLAW_PYTHON_BIN}"
-
-    if env \
-      SERVICE_NAME="${BRAINCLAW_SERVICE_NAME}" \
-      INSTALL_DIR="${BRAINCLAW_DIR}" \
-      PYTHON_BIN="${BRAINCLAW_PYTHON_BIN}" \
-      PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT}" \
-      PIP_DISABLE_PIP_VERSION_CHECK=1 \
-      PIP_NO_INPUT=1 \
-      bash "${installer}"; then
-
-      ok "BrainClaw original installer finished"
-      return 0
-    fi
-
-    warn "Original BrainClaw installer failed. Trying manual fallback."
-  else
-    warn "BrainClaw original service installer not found. Trying manual fallback."
-  fi
-
   manual_brainclaw_install
 }
 
@@ -647,7 +649,7 @@ cleanup_previous_hanging_install() {
   step "Checking for previous hanging BrainClaw pip installers"
 
   local pids
-  pids="$(pgrep -f '/opt/brainclaw/.venv/bin/pip install' || true)"
+  pids="$(pgrep -f "${BRAINCLAW_DIR}/.venv/bin/pip install" || true)"
 
   if [[ -n "${pids}" ]]; then
     warn "Found previous BrainClaw pip installer process:"
@@ -690,7 +692,7 @@ test_brainclaw_service() {
   fi
 
   if need_cmd curl; then
-    curl -fsS "${BRAINCLAW_URL}/" >/dev/null 2>&1 && ok "BrainClaw HTTP endpoint responded" || warn "BrainClaw HTTP endpoint did not respond at ${BRAINCLAW_URL}"
+    curl -fsS "${BRAINCLAW_URL}/admin/" >/dev/null 2>&1 && ok "BrainClaw admin endpoint responded" || warn "BrainClaw admin endpoint did not respond at ${BRAINCLAW_URL}/admin/"
   fi
 }
 
@@ -756,7 +758,102 @@ confirm_run() {
   fi
 }
 
-main() {
+confirm_uninstall() {
+  if [[ "${ASSUME_YES}" == "1" ]]; then
+    return 0
+  fi
+
+  if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+    fail "No interactive TTY detected. Re-run with ASSUME_YES=1 for non-interactive uninstall."
+  fi
+
+  warn "This will stop and uninstall BrainClaw service files."
+  if [[ "${REMOVE_DATA}" == "1" || "${REMOVE_DATA}" == "true" ]]; then
+    warn "REMOVE_DATA is enabled, so ${BRAINCLAW_DIR} will also be removed."
+  fi
+  if [[ "${REMOVE_OPENCLAW}" == "1" || "${REMOVE_OPENCLAW}" == "true" ]]; then
+    warn "REMOVE_OPENCLAW is enabled, so OpenClaw integration files will also be removed."
+  fi
+
+  read -r -p "Continue uninstall? [y/N] " confirm < /dev/tty
+
+  if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
+    fail "Cancelled."
+  fi
+}
+
+uninstall_stack() {
+  banner
+  confirm_uninstall
+
+  step "Stopping BrainClaw service"
+  if need_cmd systemctl; then
+    systemctl stop "${BRAINCLAW_SERVICE_NAME}" 2>/dev/null || true
+    systemctl disable "${BRAINCLAW_SERVICE_NAME}" 2>/dev/null || true
+    rm -f "/etc/systemd/system/${BRAINCLAW_SERVICE_NAME}.service"
+    systemctl daemon-reload
+    systemctl reset-failed "${BRAINCLAW_SERVICE_NAME}" 2>/dev/null || true
+    ok "BrainClaw service removed"
+  else
+    warn "systemctl not found. Removing service unit file only."
+    rm -f "/etc/systemd/system/${BRAINCLAW_SERVICE_NAME}.service"
+  fi
+
+  if [[ "${REMOVE_DATA}" == "1" || "${REMOVE_DATA}" == "true" ]]; then
+    step "Removing BrainClaw install directory"
+    rm -rf "${BRAINCLAW_DIR}"
+    ok "Removed ${BRAINCLAW_DIR}"
+  else
+    warn "Kept ${BRAINCLAW_DIR}. Set REMOVE_DATA=1 to remove it."
+  fi
+
+  if [[ "${REMOVE_OPENCLAW}" == "1" || "${REMOVE_OPENCLAW}" == "true" ]]; then
+    step "Removing OpenClaw integration"
+    if id -u "${OPENCLAW_USER}" >/dev/null 2>&1; then
+      sudo -u "${OPENCLAW_USER}" -H env OPENCLAW_NPM_PREFIX="${OPENCLAW_NPM_PREFIX}" bash -lc '
+        export PATH="$OPENCLAW_NPM_PREFIX/bin:$PATH"
+        if command -v openclaw >/dev/null 2>&1; then
+          openclaw gateway uninstall >/dev/null 2>&1 || true
+        fi
+      ' || true
+    fi
+    rm -f /usr/local/bin/openclaw-brainclaw
+    rm -rf /etc/openclaw
+    rm -rf "${OPENCLAW_INSTALL_DIR}"
+    ok "OpenClaw integration files removed"
+  else
+    warn "Kept OpenClaw files. Set REMOVE_OPENCLAW=1 to remove integration files."
+  fi
+
+  if [[ "${REMOVE_OPENCLAW_USER}" == "1" || "${REMOVE_OPENCLAW_USER}" == "true" ]]; then
+    step "Removing OpenClaw Linux user"
+    userdel -r "${OPENCLAW_USER}" 2>/dev/null || userdel "${OPENCLAW_USER}" 2>/dev/null || true
+    ok "Removed ${OPENCLAW_USER} if it existed"
+  else
+    warn "Kept Linux user ${OPENCLAW_USER}. Set REMOVE_OPENCLAW_USER=1 to remove it."
+  fi
+}
+
+usage() {
+  cat <<EOF
+Usage:
+  sudo ./setup.sh install
+  sudo ./setup.sh uninstall
+
+Install is the default command.
+
+Useful environment options:
+  ASSUME_YES=1               run without prompts
+  OPENCLAW_PASSWORD=...      set the openclaw Linux user password non-interactively
+  BRAINCLAW_DIR=/opt/path    install BrainClaw somewhere else
+  BRAINCLAW_REPO=https://... clone instead of installing from this checkout
+  REMOVE_DATA=1              uninstall and remove BrainClaw installed files/data
+  REMOVE_OPENCLAW=1          uninstall and remove OpenClaw integration files
+  REMOVE_OPENCLAW_USER=1     uninstall and remove the openclaw Linux user
+EOF
+}
+
+install_stack() {
   banner
   confirm_run
 
@@ -770,6 +867,31 @@ main() {
   setup_openclaw_gateway
   test_brainclaw_service
   print_summary
+}
+
+main() {
+  if [[ -t 1 ]]; then
+    clear
+  fi
+
+  local command="${1:-install}"
+  case "${command}" in
+    install)
+      shift || true
+      install_stack "$@"
+      ;;
+    uninstall)
+      shift || true
+      uninstall_stack "$@"
+      ;;
+    -h|--help|help)
+      usage
+      ;;
+    *)
+      usage >&2
+      fail "Unknown command: ${command}"
+      ;;
+  esac
 }
 
 main "$@"
