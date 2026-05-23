@@ -892,6 +892,68 @@ EOF
   ok "Prompt integration installed"
 }
 
+inject_brainclaw_into_openclaw_user() {
+  step "Injecting BrainClaw environment into OpenClaw user"
+
+  local user_env="${OPENCLAW_INSTALL_DIR}/brainclaw.env"
+  local launcher="${OPENCLAW_NPM_PREFIX}/bin/openclaw-with-brainclaw"
+  local shell_block_start="# >>> brainclaw openclaw integration >>>"
+  local shell_block_end="# <<< brainclaw openclaw integration <<<"
+
+  if [[ ! -f /etc/openclaw/environment.conf ]]; then
+    fail "/etc/openclaw/environment.conf was not created."
+  fi
+
+  install -d -o "${OPENCLAW_USER}" -g "${OPENCLAW_GROUP}" -m 0750 "${OPENCLAW_INSTALL_DIR}"
+  install -d -o "${OPENCLAW_USER}" -g "${OPENCLAW_GROUP}" -m 0750 "${OPENCLAW_NPM_PREFIX}/bin"
+  install -m 0640 -o "${OPENCLAW_USER}" -g "${OPENCLAW_GROUP}" /etc/openclaw/environment.conf "${user_env}"
+
+  cat > "${launcher}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+exec /usr/local/bin/openclaw-brainclaw "${OPENCLAW_NPM_PREFIX}/bin/openclaw" "\$@"
+EOF
+  chown "${OPENCLAW_USER}:${OPENCLAW_GROUP}" "${launcher}"
+  chmod 0750 "${launcher}"
+
+  for profile in "${OPENCLAW_HOME}/.bashrc" "${OPENCLAW_HOME}/.profile"; do
+    touch "${profile}"
+    chown "${OPENCLAW_USER}:${OPENCLAW_GROUP}" "${profile}"
+    python3 - "${profile}" "${shell_block_start}" "${shell_block_end}" "${OPENCLAW_NPM_PREFIX}" "${user_env}" "${launcher}" <<'PY'
+from pathlib import Path
+import sys
+
+profile, start, end, npm_prefix, user_env, launcher = sys.argv[1:7]
+path = Path(profile)
+text = path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
+block = f"""{start}
+export OPENCLAW_NPM_PREFIX="{npm_prefix}"
+export PATH="{npm_prefix}/bin:$PATH"
+if [ -r "{user_env}" ]; then
+  set -a
+  . "{user_env}"
+  set +a
+fi
+alias openclaw-brainclaw="{launcher}"
+alias openclaw-memory="{launcher}"
+{end}
+"""
+if start in text and end in text:
+    before, rest = text.split(start, 1)
+    _, after = rest.split(end, 1)
+    text = before.rstrip() + "\n\n" + block + after.lstrip()
+else:
+    text = text.rstrip() + "\n\n" + block
+path.write_text(text, encoding="utf-8")
+PY
+    chown "${OPENCLAW_USER}:${OPENCLAW_GROUP}" "${profile}"
+    chmod 0640 "${profile}"
+  done
+
+  ok "OpenClaw user shell now loads BrainClaw environment"
+  ok "Run as ${OPENCLAW_USER}: openclaw-with-brainclaw"
+}
+
 setup_openclaw_gateway() {
   step "Setting up OpenClaw gateway service"
 
@@ -1194,6 +1256,18 @@ PY"
   repair_service
 }
 
+inject_openclaw_only() {
+  banner
+  load_brainclaw_env_settings
+  configure_brainclaw_bind
+  install_dependencies
+  create_openclaw_user
+  install_openclaw
+  install_prompt_integration
+  inject_brainclaw_into_openclaw_user
+  ok "BrainClaw injection into OpenClaw completed"
+}
+
 usage() {
   cat <<EOF
 Usage:
@@ -1202,6 +1276,7 @@ Usage:
   sudo ./setup.sh repair-service
   sudo ./setup.sh repair-venv
   sudo ./setup.sh repair-permissions
+  sudo ./setup.sh inject-openclaw
 
 Install is the default command.
 
@@ -1241,6 +1316,7 @@ install_stack() {
   reset_installed_brainclaw_data
   install_brainclaw_service
   install_prompt_integration
+  inject_brainclaw_into_openclaw_user
   setup_openclaw_gateway
   test_brainclaw_service
   print_summary
@@ -1272,6 +1348,10 @@ main() {
     repair-permissions)
       shift || true
       repair_brainclaw_permissions "$@"
+      ;;
+    inject-openclaw)
+      shift || true
+      inject_openclaw_only "$@"
       ;;
     -h|--help|help)
       usage

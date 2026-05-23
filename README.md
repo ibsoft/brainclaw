@@ -201,6 +201,14 @@ Every `setup.sh install` resets the installed BrainClaw SQLite database, FAISS i
 
 BrainClaw writes JSONL logs with rotation to `data/logs/brainclaw.jsonl` by default. Configure rotation with `LOG_MAX_BYTES` and `LOG_BACKUP_COUNT`; view and search logs from the admin `Logs` menu.
 
+To re-inject BrainClaw into an existing OpenClaw user without reinstalling BrainClaw, run:
+
+```bash
+sudo ./setup.sh inject-openclaw
+```
+
+This updates `/etc/openclaw/environment.conf`, installs rendered OpenClaw instruction files, copies the BrainClaw environment into the OpenClaw user profile, and adds `openclaw-with-brainclaw` / `openclaw-memory` launch helpers.
+
 Default paths:
 
 ```text
