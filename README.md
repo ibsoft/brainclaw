@@ -154,9 +154,8 @@ The unit runs as the `brainclaw` system user, binds to `127.0.0.1`, applies syst
 
 Supported targets:
 
-- Ubuntu on WSL
-- Kali Linux on WSL
-- native Ubuntu/Debian/Kali Linux with systemd
+- Linux with systemd and one of: `apt-get`, `dnf`, `yum`, `pacman`, `zypper`, or `apk`
+- WSL distributions with systemd enabled
 
 WSL requirement: systemd must be enabled. In WSL, check:
 
@@ -189,9 +188,18 @@ The script will prompt:
 
 ```text
 Continue? [y/N]
+Choose bind address [1]:
 Set Linux password for openclaw:
 Confirm password:
 ```
+
+Bind choices are localhost only (`127.0.0.1`), all interfaces (`0.0.0.0`), or a custom IP address. For non-interactive installs, set `BRAINCLAW_HOST=127.0.0.1`, `BRAINCLAW_HOST=0.0.0.0`, or `BRAINCLAW_HOST=<ip-address>`.
+
+The installer writes the selected BrainClaw URL into `/etc/openclaw/environment.conf` and renders the installed OpenClaw instruction files with that URL, so OpenClaw knows where the BrainClaw API lives.
+
+Every `setup.sh install` resets the installed BrainClaw SQLite database, FAISS indexes, and uploads to defaults while preserving saved backup zips. To generate HTTPS URLs and run Uvicorn with TLS, set `BRAINCLAW_SCHEME=https`, `BRAINCLAW_SSL_CERTFILE=/path/cert.pem`, and `BRAINCLAW_SSL_KEYFILE=/path/key.pem`.
+
+BrainClaw writes JSONL logs with rotation to `data/logs/brainclaw.jsonl` by default. Configure rotation with `LOG_MAX_BYTES` and `LOG_BACKUP_COUNT`; view and search logs from the admin `Logs` menu.
 
 Default paths:
 
@@ -202,6 +210,7 @@ OpenClaw npm prefix: /home/openclaw/openclaw/npm
 OpenClaw workspace:  /home/openclaw/workspace
 BrainClaw install:   /opt/brainclaw
 BrainClaw service:   brainclaw
+BrainClaw bind:      127.0.0.1
 BrainClaw admin:     http://127.0.0.1:8757/admin
 ```
 

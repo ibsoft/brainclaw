@@ -16,8 +16,14 @@ BRAINCLAW_REPO="${BRAINCLAW_REPO:-}"
 BRAINCLAW_DIR="${BRAINCLAW_DIR:-/opt/brainclaw}"
 BRAINCLAW_SERVICE_NAME="${BRAINCLAW_SERVICE_NAME:-brainclaw}"
 BRAINCLAW_PYTHON_BIN="${BRAINCLAW_PYTHON_BIN:-python3}"
-BRAINCLAW_URL="${BRAINCLAW_URL:-http://127.0.0.1:8757}"
+BRAINCLAW_HOST="${BRAINCLAW_HOST:-}"
+BRAINCLAW_URL="${BRAINCLAW_URL:-}"
 BRAINCLAW_PORT="${BRAINCLAW_PORT:-8757}"
+BRAINCLAW_SCHEME="${BRAINCLAW_SCHEME:-${BRAINCLAW_PROTOCOL:-http}}"
+BRAINCLAW_SSL_CERTFILE="${BRAINCLAW_SSL_CERTFILE:-}"
+BRAINCLAW_SSL_KEYFILE="${BRAINCLAW_SSL_KEYFILE:-}"
+BRAINCLAW_FAISS_PACKAGE="${BRAINCLAW_FAISS_PACKAGE:-faiss-cpu==1.8.0.post1}"
+BRAINCLAW_NUMPY_PACKAGE="${BRAINCLAW_NUMPY_PACKAGE:-numpy==1.26.4}"
 
 NODE_MAJOR="${NODE_MAJOR:-22}"
 ASSUME_YES="${ASSUME_YES:-0}"
@@ -83,40 +89,107 @@ need_cmd() {
   command -v "$1" >/dev/null 2>&1
 }
 
-installed_pkg() {
-  dpkg -s "$1" >/dev/null 2>&1
+strip_cr() {
+  tr -d '\r'
 }
 
 version_ge() {
   printf '%s\n%s\n' "$2" "$1" | sort -V -C
 }
 
-install_missing_packages() {
-  local missing=()
+package_manager() {
+  if need_cmd apt-get; then
+    echo apt
+  elif need_cmd dnf; then
+    echo dnf
+  elif need_cmd yum; then
+    echo yum
+  elif need_cmd pacman; then
+    echo pacman
+  elif need_cmd zypper; then
+    echo zypper
+  elif need_cmd apk; then
+    echo apk
+  else
+    echo none
+  fi
+}
 
-  for pkg in "$@"; do
-    if ! installed_pkg "$pkg"; then
-      missing+=("$pkg")
-    fi
-  done
-
-  if (( ${#missing[@]} == 0 )); then
-    ok "Required packages already installed"
+install_packages() {
+  if (( $# == 0 )); then
     return 0
   fi
 
-  export DEBIAN_FRONTEND=noninteractive
+  case "$(package_manager)" in
+    apt)
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y "$@"
+      ;;
+    dnf)
+      dnf install -y "$@"
+      ;;
+    yum)
+      yum install -y "$@"
+      ;;
+    pacman)
+      pacman -Sy --needed --noconfirm "$@"
+      ;;
+    zypper)
+      zypper --non-interactive install "$@"
+      ;;
+    apk)
+      apk add --no-cache "$@"
+      ;;
+    *)
+      fail "No supported package manager found. Install dependencies manually, then rerun this script."
+      ;;
+  esac
+}
 
-  step "Installing missing packages"
-  apt-get update
-  apt-get install -y "${missing[@]}"
+install_os_dependencies() {
+  step "Installing OS dependencies"
+
+  case "$(package_manager)" in
+    apt)
+      install_packages \
+        ca-certificates curl gnupg git rsync sudo systemd build-essential pkg-config \
+        libsqlite3-dev libffi-dev libssl-dev python3 python3-venv python3-pip python3-dev
+      ;;
+    dnf|yum)
+      install_packages \
+        ca-certificates curl gnupg git rsync sudo systemd gcc gcc-c++ make pkgconf-pkg-config \
+        sqlite-devel libffi-devel openssl-devel python3 python3-pip python3-devel
+      ;;
+    pacman)
+      install_packages \
+        ca-certificates curl gnupg git rsync sudo systemd base-devel pkgconf \
+        sqlite libffi openssl python python-pip
+      ;;
+    zypper)
+      install_packages \
+        ca-certificates curl gpg2 git rsync sudo systemd gcc gcc-c++ make pkg-config \
+        sqlite3-devel libffi-devel libopenssl-devel python3 python3-pip python3-devel
+      ;;
+    apk)
+      install_packages \
+        ca-certificates curl gnupg git rsync sudo build-base pkgconf \
+        sqlite-dev libffi-dev openssl-dev python3 py3-pip
+      ;;
+    *)
+      fail "No supported package manager found. Install dependencies manually, then rerun this script."
+      ;;
+  esac
 }
 
 detect_python() {
   local candidates=(
     "${BRAINCLAW_PYTHON_BIN}"
+    python3.12
+    python3.11
     python3.13
     python3
+    python
   )
 
   local py
@@ -128,7 +201,7 @@ detect_python() {
     if need_cmd "${py}"; then
       ver="$("${py}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")' 2>/dev/null || true)"
 
-      if [[ -n "${ver}" ]] && version_ge "${ver}" "3.12"; then
+      if [[ -n "${ver}" ]] && version_ge "${ver}" "3.11"; then
         BRAINCLAW_PYTHON_BIN="${py}"
         ok "Using Python ${ver}: $(command -v "${py}")"
         return 0
@@ -136,11 +209,122 @@ detect_python() {
     fi
   done
 
-  fail "Python >= 3.12 is required. On Kali rolling, python3 should usually be Python 3.13."
+  fail "Python > 3.10 is required. Install Python 3.11 or newer, or set BRAINCLAW_PYTHON_BIN."
 }
 
 python_minor() {
   "${BRAINCLAW_PYTHON_BIN}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")'
+}
+
+valid_bind_host() {
+  local host="$1"
+  if [[ "${host}" == "localhost" || "${host}" == "127.0.0.1" || "${host}" == "0.0.0.0" ]]; then
+    return 0
+  fi
+  [[ "${host}" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+}
+
+url_host_for_bind() {
+  case "$1" in
+    localhost|127.0.0.1|0.0.0.0)
+      printf '127.0.0.1'
+      ;;
+    *)
+      printf '%s' "$1"
+      ;;
+  esac
+}
+
+configure_brainclaw_bind() {
+  local choice
+  local custom
+  local url_host
+
+  BRAINCLAW_SCHEME="$(printf '%s' "${BRAINCLAW_SCHEME}" | strip_cr)"
+  BRAINCLAW_SSL_CERTFILE="$(printf '%s' "${BRAINCLAW_SSL_CERTFILE}" | strip_cr)"
+  BRAINCLAW_SSL_KEYFILE="$(printf '%s' "${BRAINCLAW_SSL_KEYFILE}" | strip_cr)"
+  if [[ "${BRAINCLAW_SCHEME}" != "http" && "${BRAINCLAW_SCHEME}" != "https" ]]; then
+    fail "BRAINCLAW_SCHEME must be http or https."
+  fi
+
+  if [[ -n "${BRAINCLAW_HOST}" ]]; then
+    BRAINCLAW_HOST="$(printf '%s' "${BRAINCLAW_HOST}" | strip_cr)"
+    if ! valid_bind_host "${BRAINCLAW_HOST}"; then
+      fail "Invalid BRAINCLAW_HOST: ${BRAINCLAW_HOST}"
+    fi
+  elif [[ "${ASSUME_YES}" == "1" ]]; then
+    BRAINCLAW_HOST="127.0.0.1"
+  else
+    if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
+      fail "No interactive TTY detected. Set BRAINCLAW_HOST=127.0.0.1, 0.0.0.0, or an IP address."
+    fi
+
+    while true; do
+      cat > /dev/tty <<EOF
+
+Bind BrainClaw to:
+  1) localhost only (127.0.0.1)
+  2) all interfaces (0.0.0.0)
+  3) custom IP address
+EOF
+      read -r -p "Choose bind address [1]: " choice < /dev/tty
+      case "${choice:-1}" in
+        1)
+          BRAINCLAW_HOST="127.0.0.1"
+          break
+          ;;
+        2)
+          BRAINCLAW_HOST="0.0.0.0"
+          break
+          ;;
+        3)
+          read -r -p "Enter IP address to bind: " custom < /dev/tty
+          if valid_bind_host "${custom}"; then
+            BRAINCLAW_HOST="${custom}"
+            break
+          fi
+          warn "Invalid bind address: ${custom}"
+          ;;
+        *)
+          warn "Choose 1, 2, or 3."
+          ;;
+      esac
+    done
+  fi
+
+  url_host="$(url_host_for_bind "${BRAINCLAW_HOST}")"
+  BRAINCLAW_URL="$(printf '%s' "${BRAINCLAW_URL}" | strip_cr)"
+  BRAINCLAW_URL="${BRAINCLAW_URL:-${BRAINCLAW_SCHEME}://${url_host}:${BRAINCLAW_PORT}}"
+  if [[ "${BRAINCLAW_HOST}" == "0.0.0.0" ]]; then
+    warn "Binding to 0.0.0.0 exposes BrainClaw on all network interfaces. Use firewalling and keep the API key private."
+  fi
+  if [[ "${BRAINCLAW_SCHEME}" == "https" && ( -z "${BRAINCLAW_SSL_CERTFILE}" || -z "${BRAINCLAW_SSL_KEYFILE}" ) ]]; then
+    warn "BRAINCLAW_SCHEME=https is set without BRAINCLAW_SSL_CERTFILE and BRAINCLAW_SSL_KEYFILE. URLs will use https, but Uvicorn will not serve TLS unless certificate paths are configured."
+  fi
+  ok "BrainClaw will bind to ${BRAINCLAW_HOST}; local URL is ${BRAINCLAW_URL}"
+}
+
+load_brainclaw_env_settings() {
+  local env_file="${BRAINCLAW_DIR}/.env"
+  [[ -f "${env_file}" ]] || return 0
+
+  if [[ -z "${BRAINCLAW_HOST}" ]]; then
+    BRAINCLAW_HOST="$(sed -n 's/^HOST=//p' "${env_file}" | head -n 1 | strip_cr)"
+  fi
+  if [[ "${BRAINCLAW_PORT}" == "8757" ]]; then
+    BRAINCLAW_PORT="$(sed -n 's/^PORT=//p' "${env_file}" | head -n 1 | strip_cr)"
+    BRAINCLAW_PORT="${BRAINCLAW_PORT:-8757}"
+  fi
+  if [[ "${BRAINCLAW_SCHEME}" == "http" ]]; then
+    BRAINCLAW_SCHEME="$(sed -n 's/^BRAINCLAW_SCHEME=//p' "${env_file}" | head -n 1 | strip_cr)"
+    BRAINCLAW_SCHEME="${BRAINCLAW_SCHEME:-http}"
+  fi
+  if [[ -z "${BRAINCLAW_SSL_CERTFILE}" ]]; then
+    BRAINCLAW_SSL_CERTFILE="$(sed -n 's/^BRAINCLAW_SSL_CERTFILE=//p' "${env_file}" | head -n 1 | strip_cr)"
+  fi
+  if [[ -z "${BRAINCLAW_SSL_KEYFILE}" ]]; then
+    BRAINCLAW_SSL_KEYFILE="$(sed -n 's/^BRAINCLAW_SSL_KEYFILE=//p' "${env_file}" | head -n 1 | strip_cr)"
+  fi
 }
 
 node_major() {
@@ -163,10 +347,27 @@ install_nodejs() {
 
   step "Installing Node.js ${NODE_MAJOR}.x"
 
-  install_missing_packages ca-certificates curl gnupg
-
-  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
-  apt-get install -y nodejs
+  if [[ "$(package_manager)" == "apt" ]]; then
+    install_packages ca-certificates curl gnupg
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
+    apt-get install -y nodejs
+  else
+    warn "NodeSource automatic setup is only used on apt-based systems. Installing Node.js from the system package manager."
+    case "$(package_manager)" in
+      dnf|yum|zypper)
+        install_packages nodejs npm
+        ;;
+      pacman)
+        install_packages nodejs npm
+        ;;
+      apk)
+        install_packages nodejs npm
+        ;;
+      *)
+        fail "No supported package manager found for Node.js installation."
+        ;;
+    esac
+  fi
 
   current="$(node_major)"
 
@@ -180,28 +381,7 @@ install_nodejs() {
 install_dependencies() {
   step "Checking OS dependencies"
 
-  if ! need_cmd apt-get; then
-    fail "This installer supports Debian, Ubuntu, and Kali systems with apt-get."
-  fi
-
-  install_missing_packages \
-    ca-certificates \
-    curl \
-    gnupg \
-    git \
-    rsync \
-    sudo \
-    systemd \
-    build-essential \
-    pkg-config \
-    libsqlite3-dev \
-    libffi-dev \
-    libssl-dev \
-    python3 \
-    python3-venv \
-    python3-pip \
-    python3-dev
-
+  install_os_dependencies
   detect_python
   install_nodejs
 }
@@ -367,8 +547,51 @@ checkout_brainclaw() {
   fi
 }
 
-patch_brainclaw_requirements_for_py313() {
-  step "Patching BrainClaw requirements for Python 3.13"
+uvicorn_ssl_args() {
+  if [[ -n "${BRAINCLAW_SSL_CERTFILE}" && -n "${BRAINCLAW_SSL_KEYFILE}" ]]; then
+    printf ' --ssl-certfile %q --ssl-keyfile %q' "${BRAINCLAW_SSL_CERTFILE}" "${BRAINCLAW_SSL_KEYFILE}"
+  fi
+}
+
+reset_installed_brainclaw_data() {
+  step "Resetting BrainClaw data to defaults"
+
+  local data_dir="${BRAINCLAW_DIR}/data"
+  local backup_dir="${data_dir}/backups"
+  local preserved_backups
+  preserved_backups="$(mktemp -d)"
+
+  if [[ -d "${backup_dir}" ]]; then
+    cp -a "${backup_dir}" "${preserved_backups}/backups"
+  fi
+
+  rm -rf \
+    "${BRAINCLAW_DIR}/data/memory.sqlite3" \
+    "${BRAINCLAW_DIR}/data/memory.sqlite3-wal" \
+    "${BRAINCLAW_DIR}/data/memory.sqlite3-shm" \
+    "${BRAINCLAW_DIR}/data/faiss.index" \
+    "${BRAINCLAW_DIR}/data/id_map.json" \
+    "${BRAINCLAW_DIR}/data/indexes" \
+    "${BRAINCLAW_DIR}/data/uploads"
+
+  find "${data_dir}" -mindepth 1 -maxdepth 1 ! -name backups ! -name logs -exec rm -rf {} + 2>/dev/null || true
+
+  install -d -o "${BRAINCLAW_SERVICE_NAME}" -g "${BRAINCLAW_SERVICE_NAME}" -m 0750 "${data_dir}"
+  install -d -o "${BRAINCLAW_SERVICE_NAME}" -g "${BRAINCLAW_SERVICE_NAME}" -m 0750 "${data_dir}/indexes"
+  install -d -o "${BRAINCLAW_SERVICE_NAME}" -g "${BRAINCLAW_SERVICE_NAME}" -m 0750 "${data_dir}/uploads"
+  install -d -o "${BRAINCLAW_SERVICE_NAME}" -g "${BRAINCLAW_SERVICE_NAME}" -m 0750 "${data_dir}/logs"
+
+  if [[ -d "${preserved_backups}/backups" ]]; then
+    install -d -o "${BRAINCLAW_SERVICE_NAME}" -g "${BRAINCLAW_SERVICE_NAME}" -m 0750 "${backup_dir}"
+    cp -a "${preserved_backups}/backups/." "${backup_dir}/"
+  fi
+  rm -rf "${preserved_backups}"
+
+  ok "BrainClaw database, indexes, and uploads reset"
+}
+
+patch_brainclaw_requirements() {
+  step "Patching BrainClaw requirements"
 
   local req="${BRAINCLAW_DIR}/requirements.txt"
 
@@ -380,11 +603,11 @@ uvicorn[standard]>=0.30.0
 pydantic>=2.9.0
 python-dotenv>=1.0.1
 requests>=2.32.0
-numpy>=2.1.0
-faiss-cpu>=1.10.0
+numpy==1.26.4
+faiss-cpu==1.8.0.post1
 sentence-transformers>=3.3.0
 transformers>=4.46.0
-torch>=2.6.0
+torch>=2.2.0
 pypdf>=5.0.0
 python-docx>=1.1.2
 pandas>=2.2.3
@@ -395,8 +618,8 @@ EOF
   cp -a "${req}" "${req}.bak.$(date +%Y%m%d-%H%M%S)"
 
   sed -i \
-    -e 's/^faiss-cpu==.*/faiss-cpu>=1.10.0/' \
-    -e 's/^numpy==.*/numpy>=2.1.0/' \
+    -e "s/^faiss-cpu[<=>!~].*/${BRAINCLAW_FAISS_PACKAGE}/" \
+    -e "s/^numpy[<=>!~].*/${BRAINCLAW_NUMPY_PACKAGE}/" \
     -e 's/^scipy==.*/scipy>=1.14.0/' \
     -e 's/^scikit-learn==.*/scikit-learn>=1.5.0/' \
     -e 's/^pandas==.*/pandas>=2.2.3/' \
@@ -405,14 +628,13 @@ EOF
     -e 's/^uvicorn==.*/uvicorn>=0.30.0/' \
     -e 's/^sentence-transformers==.*/sentence-transformers>=3.3.0/' \
     -e 's/^transformers==.*/transformers>=4.46.0/' \
-    -e 's/^torch==.*/torch>=2.6.0/' \
     -e 's/^python-dotenv==.*/python-dotenv>=1.0.1/' \
     -e 's/^requests==.*/requests>=2.32.0/' \
     -e 's/^pypdf==.*/pypdf>=5.0.0/' \
     -e 's/^python-docx==.*/python-docx>=1.1.2/' \
     "${req}"
 
-  ok "requirements.txt patched. Backup created."
+  ok "requirements.txt patched for conservative CPU wheels. Backup created."
 }
 
 create_brainclaw_env_if_missing() {
@@ -422,6 +644,43 @@ create_brainclaw_env_if_missing() {
 
   if [[ -f "${env_file}" ]]; then
     ok "BrainClaw .env already exists"
+    if grep -q '^HOST=' "${env_file}"; then
+      sed -i "s#^HOST=.*#HOST=${BRAINCLAW_HOST}#" "${env_file}"
+    else
+      printf 'HOST=%s\n' "${BRAINCLAW_HOST}" >> "${env_file}"
+    fi
+    if grep -q '^PORT=' "${env_file}"; then
+      sed -i "s#^PORT=.*#PORT=${BRAINCLAW_PORT}#" "${env_file}"
+    else
+      printf 'PORT=%s\n' "${BRAINCLAW_PORT}" >> "${env_file}"
+    fi
+    if grep -q '^BRAINCLAW_SCHEME=' "${env_file}"; then
+      sed -i "s#^BRAINCLAW_SCHEME=.*#BRAINCLAW_SCHEME=${BRAINCLAW_SCHEME}#" "${env_file}"
+    else
+      printf 'BRAINCLAW_SCHEME=%s\n' "${BRAINCLAW_SCHEME}" >> "${env_file}"
+    fi
+    if grep -q '^BRAINCLAW_SSL_CERTFILE=' "${env_file}"; then
+      sed -i "s#^BRAINCLAW_SSL_CERTFILE=.*#BRAINCLAW_SSL_CERTFILE=${BRAINCLAW_SSL_CERTFILE}#" "${env_file}"
+    else
+      printf 'BRAINCLAW_SSL_CERTFILE=%s\n' "${BRAINCLAW_SSL_CERTFILE}" >> "${env_file}"
+    fi
+    if grep -q '^BRAINCLAW_SSL_KEYFILE=' "${env_file}"; then
+      sed -i "s#^BRAINCLAW_SSL_KEYFILE=.*#BRAINCLAW_SSL_KEYFILE=${BRAINCLAW_SSL_KEYFILE}#" "${env_file}"
+    else
+      printf 'BRAINCLAW_SSL_KEYFILE=%s\n' "${BRAINCLAW_SSL_KEYFILE}" >> "${env_file}"
+    fi
+    if grep -q '^LOG_FILE=' "${env_file}"; then
+      sed -i "s#^LOG_FILE=.*#LOG_FILE=${BRAINCLAW_DIR}/data/logs/brainclaw.jsonl#" "${env_file}"
+    else
+      printf 'LOG_FILE=%s/data/logs/brainclaw.jsonl\n' "${BRAINCLAW_DIR}" >> "${env_file}"
+    fi
+    if ! grep -q '^LOG_MAX_BYTES=' "${env_file}"; then
+      printf 'LOG_MAX_BYTES=10485760\n' >> "${env_file}"
+    fi
+    if ! grep -q '^LOG_BACKUP_COUNT=' "${env_file}"; then
+      printf 'LOG_BACKUP_COUNT=5\n' >> "${env_file}"
+    fi
+    ok "BrainClaw .env bind settings updated"
     return 0
   fi
 
@@ -439,8 +698,14 @@ import secrets
 print(secrets.token_hex(32))
 PY
 )
-HOST=127.0.0.1
+HOST=${BRAINCLAW_HOST}
 PORT=${BRAINCLAW_PORT}
+BRAINCLAW_SCHEME=${BRAINCLAW_SCHEME}
+BRAINCLAW_SSL_CERTFILE=${BRAINCLAW_SSL_CERTFILE}
+BRAINCLAW_SSL_KEYFILE=${BRAINCLAW_SSL_KEYFILE}
+LOG_FILE=${BRAINCLAW_DIR}/data/logs/brainclaw.jsonl
+LOG_MAX_BYTES=10485760
+LOG_BACKUP_COUNT=5
 DATA_DIR=${BRAINCLAW_DIR}/data
 SQLITE_PATH=${BRAINCLAW_DIR}/data/memory.sqlite3
 FAISS_INDEX_PATH=${BRAINCLAW_DIR}/data/faiss.index
@@ -456,32 +721,19 @@ EOF
 }
 
 find_brainclaw_app() {
-  local candidates=(
-    "app.main:app"
-    "main:app"
-    "brainclaw.main:app"
-    "brainclaw.app:app"
-    "server.main:app"
-  )
-
-  local candidate
-  for candidate in "${candidates[@]}"; do
-    local module="${candidate%%:*}"
-    if sudo -u "${BRAINCLAW_SERVICE_NAME}" -H bash -lc "cd '${BRAINCLAW_DIR}' && source .venv/bin/activate && python - <<PY
-import importlib
-try:
-    importlib.import_module('${module}')
-    print('OK')
-except Exception:
-    raise
-PY" >/dev/null 2>&1; then
-      printf '%s' "${candidate}"
-      return 0
-    fi
-  done
-
-  printf 'main:app'
-  return 0
+  if [[ -f "${BRAINCLAW_DIR}/app/main.py" ]]; then
+    printf 'app.main:app'
+  elif [[ -f "${BRAINCLAW_DIR}/main.py" ]]; then
+    printf 'main:app'
+  elif [[ -f "${BRAINCLAW_DIR}/brainclaw/main.py" ]]; then
+    printf 'brainclaw.main:app'
+  elif [[ -f "${BRAINCLAW_DIR}/brainclaw/app.py" ]]; then
+    printf 'brainclaw.app:app'
+  elif [[ -f "${BRAINCLAW_DIR}/server/main.py" ]]; then
+    printf 'server.main:app'
+  else
+    fail "Could not find BrainClaw ASGI app under ${BRAINCLAW_DIR}"
+  fi
 }
 
 manual_brainclaw_install() {
@@ -509,7 +761,9 @@ manual_brainclaw_install() {
   create_brainclaw_env_if_missing
 
   local app_target
+  local ssl_args
   app_target="$(find_brainclaw_app)"
+  ssl_args="$(uvicorn_ssl_args)"
 
   step "Creating systemd service for BrainClaw using ${app_target}"
 
@@ -524,7 +778,7 @@ User=${BRAINCLAW_SERVICE_NAME}
 Group=${BRAINCLAW_SERVICE_NAME}
 WorkingDirectory=${BRAINCLAW_DIR}
 EnvironmentFile=${BRAINCLAW_DIR}/.env
-ExecStart=${BRAINCLAW_DIR}/.venv/bin/uvicorn ${app_target} --host 127.0.0.1 --port ${BRAINCLAW_PORT}
+ExecStart=${BRAINCLAW_DIR}/.venv/bin/uvicorn ${app_target} --host ${BRAINCLAW_HOST} --port ${BRAINCLAW_PORT}${ssl_args}
 Restart=on-failure
 RestartSec=5
 NoNewPrivileges=true
@@ -553,7 +807,7 @@ install_brainclaw_service() {
   step "Removing old BrainClaw virtual environment"
   rm -rf "${BRAINCLAW_DIR}/.venv"
 
-  patch_brainclaw_requirements_for_py313
+  patch_brainclaw_requirements
   manual_brainclaw_install
 }
 
@@ -566,7 +820,7 @@ install_prompt_integration() {
 
   create_brainclaw_env_if_missing
 
-  memory_key="$(sed -n 's/^MEMORY_API_KEY=//p' "${env_file}" | head -n 1)"
+  memory_key="$(sed -n 's/^MEMORY_API_KEY=//p' "${env_file}" | head -n 1 | strip_cr)"
 
   if [[ -z "${memory_key}" ]]; then
     fail "Could not read MEMORY_API_KEY from ${env_file}"
@@ -715,6 +969,7 @@ OpenClaw npm prefix:
 
 BrainClaw:
   ${BRAINCLAW_DIR}
+  bind: ${BRAINCLAW_HOST}
   ${BRAINCLAW_URL}/admin
 
 Python used for BrainClaw:
@@ -834,11 +1089,94 @@ uninstall_stack() {
   fi
 }
 
+repair_service() {
+  banner
+  load_brainclaw_env_settings
+  configure_brainclaw_bind
+
+  if [[ ! -d "${BRAINCLAW_DIR}" ]]; then
+    fail "BrainClaw install directory not found: ${BRAINCLAW_DIR}"
+  fi
+
+  local app_target
+  local ssl_args
+  app_target="$(find_brainclaw_app)"
+  ssl_args="$(uvicorn_ssl_args)"
+
+  step "Repairing BrainClaw systemd service using ${app_target}"
+  cat > "/etc/systemd/system/${BRAINCLAW_SERVICE_NAME}.service" <<EOF
+[Unit]
+Description=BrainClaw local memory service
+After=network.target
+
+[Service]
+Type=simple
+User=${BRAINCLAW_SERVICE_NAME}
+Group=${BRAINCLAW_SERVICE_NAME}
+WorkingDirectory=${BRAINCLAW_DIR}
+EnvironmentFile=${BRAINCLAW_DIR}/.env
+ExecStart=${BRAINCLAW_DIR}/.venv/bin/uvicorn ${app_target} --host ${BRAINCLAW_HOST} --port ${BRAINCLAW_PORT}${ssl_args}
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=false
+ReadWritePaths=${BRAINCLAW_DIR}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl restart "${BRAINCLAW_SERVICE_NAME}"
+  ok "BrainClaw service repaired and restarted"
+}
+
+repair_venv() {
+  banner
+
+  if [[ ! -d "${BRAINCLAW_DIR}" ]]; then
+    fail "BrainClaw install directory not found: ${BRAINCLAW_DIR}"
+  fi
+
+  step "Stopping BrainClaw service"
+  systemctl stop "${BRAINCLAW_SERVICE_NAME}" 2>/dev/null || true
+
+  detect_python
+  patch_brainclaw_requirements
+
+  step "Rebuilding BrainClaw virtual environment"
+  rm -rf "${BRAINCLAW_DIR}/.venv"
+  chown -R "${BRAINCLAW_SERVICE_NAME}:${BRAINCLAW_SERVICE_NAME}" "${BRAINCLAW_DIR}"
+  sudo -u "${BRAINCLAW_SERVICE_NAME}" -H "${BRAINCLAW_PYTHON_BIN}" -m venv "${BRAINCLAW_DIR}/.venv"
+  sudo -u "${BRAINCLAW_SERVICE_NAME}" -H "${BRAINCLAW_DIR}/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
+  sudo -u "${BRAINCLAW_SERVICE_NAME}" -H env \
+    PIP_DEFAULT_TIMEOUT="${PIP_DEFAULT_TIMEOUT}" \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_INPUT=1 \
+    "${BRAINCLAW_DIR}/.venv/bin/pip" install --prefer-binary -r "${BRAINCLAW_DIR}/requirements.txt"
+
+  step "Testing native imports"
+  sudo -u "${BRAINCLAW_SERVICE_NAME}" -H bash -lc "cd '${BRAINCLAW_DIR}' && '${BRAINCLAW_DIR}/.venv/bin/python' - <<'PY'
+import faiss
+import numpy
+import torch
+print('native imports ok')
+PY"
+
+  load_brainclaw_env_settings
+  configure_brainclaw_bind
+  repair_service
+}
+
 usage() {
   cat <<EOF
 Usage:
   sudo ./setup.sh install
   sudo ./setup.sh uninstall
+  sudo ./setup.sh repair-service
+  sudo ./setup.sh repair-venv
 
 Install is the default command.
 
@@ -846,6 +1184,15 @@ Useful environment options:
   ASSUME_YES=1               run without prompts
   OPENCLAW_PASSWORD=...      set the openclaw Linux user password non-interactively
   BRAINCLAW_DIR=/opt/path    install BrainClaw somewhere else
+  BRAINCLAW_HOST=0.0.0.0     bind address: 127.0.0.1, 0.0.0.0, or a specific IP
+  BRAINCLAW_PORT=8757        bind port
+  BRAINCLAW_SCHEME=https     URL scheme for OpenClaw/admin links: http or https
+  BRAINCLAW_SSL_CERTFILE=... TLS certificate path for Uvicorn
+  BRAINCLAW_SSL_KEYFILE=...  TLS private key path for Uvicorn
+  LOG_MAX_BYTES=10485760     JSONL log rotation size
+  LOG_BACKUP_COUNT=5         JSONL rotated file count
+  BRAINCLAW_FAISS_PACKAGE=... override FAISS package, default: ${BRAINCLAW_FAISS_PACKAGE}
+  BRAINCLAW_NUMPY_PACKAGE=... override NumPy package, default: ${BRAINCLAW_NUMPY_PACKAGE}
   BRAINCLAW_REPO=https://... clone instead of installing from this checkout
   REMOVE_DATA=1              uninstall and remove BrainClaw installed files/data
   REMOVE_OPENCLAW=1          uninstall and remove OpenClaw integration files
@@ -856,12 +1203,17 @@ EOF
 install_stack() {
   banner
   confirm_run
+  configure_brainclaw_bind
 
   cleanup_previous_hanging_install
   install_dependencies
   create_openclaw_user
   install_openclaw
   checkout_brainclaw
+  if ! id -u "${BRAINCLAW_SERVICE_NAME}" >/dev/null 2>&1; then
+    useradd --system --home-dir "${BRAINCLAW_DIR}" --shell /usr/sbin/nologin "${BRAINCLAW_SERVICE_NAME}" || true
+  fi
+  reset_installed_brainclaw_data
   install_brainclaw_service
   install_prompt_integration
   setup_openclaw_gateway
@@ -883,6 +1235,14 @@ main() {
     uninstall)
       shift || true
       uninstall_stack "$@"
+      ;;
+    repair-service)
+      shift || true
+      repair_service "$@"
+      ;;
+    repair-venv)
+      shift || true
+      repair_venv "$@"
       ;;
     -h|--help|help)
       usage

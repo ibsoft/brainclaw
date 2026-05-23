@@ -15,12 +15,16 @@ if [[ -f "${ENV_FILE}" ]]; then
   set +a
 fi
 
-export BRAINCLAW_URL="${BRAINCLAW_URL:-http://127.0.0.1:8757}"
-export BRAINCLAW_API_KEY="${BRAINCLAW_API_KEY:-${MEMORY_API_KEY:-}}"
-export OPENCLAW_AGENT_ID="${OPENCLAW_AGENT_ID:-${AGENT_ID:-openclaw}}"
-export OPENCLAW_WORKSPACE="${OPENCLAW_WORKSPACE:-${WORKSPACE:-default}}"
-export OPENCLAW_SYSTEM_PROMPT="${OPENCLAW_SYSTEM_PROMPT:-/etc/openclaw/OpenClaw.md}"
-export OPENCLAW_DEFAULTS_DIR="${OPENCLAW_DEFAULTS_DIR:-/etc/openclaw/defaults}"
+strip_cr() {
+  tr -d '\r'
+}
+
+export BRAINCLAW_URL="$(printf '%s' "${BRAINCLAW_URL:-http://127.0.0.1:8757}" | strip_cr)"
+export BRAINCLAW_API_KEY="$(printf '%s' "${BRAINCLAW_API_KEY:-${MEMORY_API_KEY:-}}" | strip_cr)"
+export OPENCLAW_AGENT_ID="$(printf '%s' "${OPENCLAW_AGENT_ID:-${AGENT_ID:-openclaw}}" | strip_cr)"
+export OPENCLAW_WORKSPACE="$(printf '%s' "${OPENCLAW_WORKSPACE:-${WORKSPACE:-default}}" | strip_cr)"
+export OPENCLAW_SYSTEM_PROMPT="$(printf '%s' "${OPENCLAW_SYSTEM_PROMPT:-/etc/openclaw/OpenClaw.md}" | strip_cr)"
+export OPENCLAW_DEFAULTS_DIR="$(printf '%s' "${OPENCLAW_DEFAULTS_DIR:-/etc/openclaw/defaults}" | strip_cr)"
 
 # Export common aliases used by different launchers. OpenClaw must still be
 # configured to consume at least one of these.
