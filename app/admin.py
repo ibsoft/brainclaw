@@ -119,10 +119,11 @@ BASE_TEMPLATE = """
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <p class="text-secondary">This key is shown once. Store it before closing this modal.</p>
-        <div class="secret-box p-3 rounded border border-warning-subtle bg-dark text-warning">{{ created_key }}</div>
+        <p class="text-secondary">This key is available from the API keys table while it remains stored.</p>
+        <div class="secret-box p-3 rounded border border-warning-subtle bg-dark text-warning" data-secret-value>{{ created_key }}</div>
       </div>
       <div class="modal-footer">
+        <button type="button" class="btn btn-outline-light" data-copy-secret="{{ created_key }}"><i class="fa-solid fa-copy me-1"></i>Copy</button>
         <button type="button" class="btn btn-primary" data-bs-dismiss="modal">Done</button>
       </div>
     </div>
@@ -210,6 +211,33 @@ BASE_TEMPLATE = """
     const createdKeyModal = document.getElementById("createdKeyModal");
     if (createdKeyModal) bootstrap.Modal.getOrCreateInstance(createdKeyModal).show();
   });
+  document.addEventListener("click", async (event) => {
+    const button = event.target.closest("[data-copy-secret]");
+    if (!button) return;
+    const secret = button.dataset.copySecret || "";
+    if (!secret) return;
+    const originalHtml = button.innerHTML;
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(secret);
+      } else {
+        const input = document.createElement("textarea");
+        input.value = secret;
+        input.setAttribute("readonly", "");
+        input.style.position = "fixed";
+        input.style.opacity = "0";
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        input.remove();
+      }
+      button.innerHTML = '<i class="fa-solid fa-check me-1"></i>Copied';
+      window.setTimeout(() => { button.innerHTML = originalHtml; }, 1500);
+    } catch {
+      button.innerHTML = '<i class="fa-solid fa-triangle-exclamation me-1"></i>Copy failed';
+      window.setTimeout(() => { button.innerHTML = originalHtml; }, 1800);
+    }
+  });
   document.addEventListener("DOMContentLoaded", () => {
     if (!flashMessages.length) return;
     const modalElement = document.getElementById("flashModal");
@@ -252,8 +280,8 @@ BLOCKED_SQL_WORDS = re.compile(
     r"\b(attach|alter|analyze|create|delete|detach|drop|insert|pragma|reindex|replace|update|vacuum)\b",
     re.IGNORECASE,
 )
-BLOCKED_SQL_IDENTIFIERS = re.compile(r"\b(app_settings|key_hash|password_hash)\b", re.IGNORECASE)
-HIDDEN_RESULT_COLUMNS = {"key_hash", "password_hash", "admin_password_hash"}
+BLOCKED_SQL_IDENTIFIERS = re.compile(r"\b(app_settings|key_hash|key_secret|password_hash)\b", re.IGNORECASE)
+HIDDEN_RESULT_COLUMNS = {"key_hash", "key_secret", "password_hash", "admin_password_hash"}
 USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.@-]{3,64}$")
 PASSWORD_SPECIAL_PATTERN = re.compile(r"[^A-Za-z0-9]")
 DEFAULT_PAGE_SIZE = 50
@@ -362,6 +390,52 @@ def create_backup_file(settings: Any) -> Path:
             zip_file.writestr(f"data/{sqlite_path.name}", sqlite_backup_bytes(sqlite_path))
         zip_directory(zip_file, data_dir, "data", exclude=exclude)
     return backup_path
+
+
+def remove_path(path: Path) -> None:
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def reset_live_app_data(settings: Any) -> None:
+    project_root = Path(__file__).resolve().parent.parent
+    data_dir = Path(settings.data_dir).resolve()
+    backup_dir = server_backup_dir(settings).resolve()
+    explicit_paths = [
+        Path(settings.sqlite_path),
+        Path(settings.sqlite_path).with_name(Path(settings.sqlite_path).name + "-wal"),
+        Path(settings.sqlite_path).with_name(Path(settings.sqlite_path).name + "-shm"),
+        Path(settings.faiss_index_path),
+        Path(settings.id_map_path),
+        Path(settings.index_dir),
+        Path(settings.upload_dir),
+    ]
+
+    if data_dir == project_root:
+        raise ValueError("DATA_DIR cannot be the project root when resetting the app.")
+    for path in explicit_paths:
+        if path.resolve() == project_root:
+            raise ValueError(f"Refusing to reset project root path: {path}")
+
+    if data_dir.exists():
+        for item in data_dir.iterdir():
+            resolved = item.resolve()
+            if resolved == backup_dir or backup_dir in resolved.parents:
+                continue
+            remove_path(item)
+
+    for path in explicit_paths:
+        resolved = path.resolve()
+        if resolved == backup_dir or backup_dir in resolved.parents:
+            continue
+        remove_path(path)
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    Path(settings.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(settings.index_dir).mkdir(parents=True, exist_ok=True)
+    Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
 
 
 def validate_username(username: str) -> str:
@@ -481,6 +555,11 @@ def create_admin_app(settings: Any, db: Database, memory_service: MemoryService,
         start = (safe_page - 1) * per_page
         return items[start : start + per_page], total, pages
 
+    def admin_redirect_target(next_path: str | None) -> str:
+        if not next_path or not next_path.startswith("/") or next_path.startswith("//"):
+            return url_for("dashboard")
+        return f"{request.script_root}{next_path}"
+
     @app.route("/setup", methods=["GET", "POST"])
     def setup():
         if db.admin_is_configured():
@@ -553,7 +632,7 @@ def create_admin_app(settings: Any, db: Database, memory_service: MemoryService,
                 session["admin"] = True
                 session["admin_username"] = username
                 session["csrf_token"] = secrets.token_urlsafe(32)
-                return redirect(request.args.get("next") or url_for("dashboard"))
+                return redirect(admin_redirect_target(request.args.get("next")))
             else:
                 flash("Invalid username or password.", "danger")
         return render(
@@ -684,15 +763,15 @@ def create_admin_app(settings: Any, db: Database, memory_service: MemoryService,
                   <div class="border border-danger-subtle rounded p-2 mt-3">
                     <div class="d-flex align-items-center justify-content-between gap-2 mb-2">
                       <div>
-                        <div class="fw-semibold text-danger"><i class="fa-solid fa-triangle-exclamation me-1"></i>Purge all data</div>
-                        <div class="small text-secondary">Keeps saved backup zips, removes live data and credentials.</div>
+                        <div class="fw-semibold text-danger"><i class="fa-solid fa-triangle-exclamation me-1"></i>Reset app</div>
+                        <div class="small text-secondary">Keeps saved backup zips, removes live data, indexes, uploads, API keys, and admin credentials.</div>
                       </div>
                     </div>
-                    <form method="post" action="{{ url_for('purge_data') }}" data-confirm="Permanently purge all BrainClaw data? Download a backup first.">
+                    <form method="post" action="{{ url_for('purge_data') }}" data-confirm="Permanently reset BrainClaw? Download a backup first.">
                       <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                       <div class="input-group input-group-sm">
                         <input class="form-control" name="confirmation" placeholder="Type PURGE" autocomplete="off">
-                        <button class="btn btn-outline-danger"><i class="fa-solid fa-fire me-1"></i>Purge</button>
+                        <button class="btn btn-outline-danger"><i class="fa-solid fa-rotate-left me-1"></i>Reset</button>
                       </div>
                     </form>
                   </div>
@@ -856,25 +935,11 @@ def create_admin_app(settings: Any, db: Database, memory_service: MemoryService,
         if request.form.get("confirmation") != "PURGE":
             flash("Type PURGE to confirm data purge.", "warning")
             return redirect(url_for("backup_restore"))
-        data_dir = Path(settings.data_dir)
-        backup_dir = server_backup_dir(settings)
-        preserved_backups = Path(tempfile.mkdtemp(prefix="brainclaw-backups-"))
-        copied_backups = preserved_backups / "backups"
-        if backup_dir.exists():
-            shutil.copytree(backup_dir, copied_backups)
-        if data_dir.exists():
-            shutil.rmtree(data_dir)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        if copied_backups.exists():
-            shutil.copytree(copied_backups, server_backup_dir(settings), dirs_exist_ok=True)
-        shutil.rmtree(preserved_backups, ignore_errors=True)
-        Path(settings.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(settings.index_dir).mkdir(parents=True, exist_ok=True)
-        Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+        reset_live_app_data(settings)
         db.init_schema()
         faiss_store.reload()
         session.clear()
-        flash("All BrainClaw data was purged. Create a new admin account to continue.", "warning")
+        flash("BrainClaw was reset. Create a new admin account to continue.", "warning")
         return redirect(url_for("setup"))
 
     @app.route("/query", methods=["GET", "POST"])
@@ -1477,8 +1542,8 @@ LIMIT 50;</pre>
                     flash("Agent keys require both agent and workspace.", "danger")
                 else:
                     created_key = generate_api_key()
-                    db.create_api_key(name, hash_api_key(created_key), key_prefix(created_key), role, agent_id if role == "agent" else None, workspace if role == "agent" else None)
-                    flash("API key created. It is shown once below.", "success")
+                    db.create_api_key(name, hash_api_key(created_key), key_prefix(created_key), created_key, role, agent_id if role == "agent" else None, workspace if role == "agent" else None)
+                    flash("API key created.", "success")
         all_keys = [dict(row) for row in db.list_api_keys()]
         keys, total, pages = paginate_list(all_keys, page, per_page)
         return render(
@@ -1507,11 +1572,22 @@ LIMIT 50;</pre>
                   <div class="text-secondary small mb-2">{{ total }} total · {{ per_page }} rows per page</div>
                   <div class="table-responsive">
                     <table class="table table-hover align-middle mb-0">
-                      <thead><tr><th>Name</th><th>Prefix</th><th>Role</th><th>Scope</th><th>Status</th><th>Last Used</th><th></th></tr></thead>
+                      <thead><tr><th>Name</th><th>Key</th><th>Role</th><th>Scope</th><th>Status</th><th>Last Used</th><th></th></tr></thead>
                       <tbody>
                       {% for key in keys %}
                         <tr>
-                          <td>{{ key.name }}</td><td class="secret-box">{{ key.key_prefix }}...</td><td>{{ key.role }}</td>
+                          <td>{{ key.name }}</td>
+                          <td>
+                            <div class="d-flex align-items-center gap-2">
+                              <span class="secret-box">{{ key.key_prefix }}...</span>
+                              {% if key.key_secret %}
+                              <button type="button" class="btn btn-sm btn-outline-light" data-copy-secret="{{ key.key_secret }}"><i class="fa-solid fa-copy me-1"></i>Copy</button>
+                              {% else %}
+                              <span class="badge text-bg-secondary">prefix only</span>
+                              {% endif %}
+                            </div>
+                          </td>
+                          <td>{{ key.role }}</td>
                           <td>{{ key.agent_id or '*' }} / {{ key.workspace or '*' }}</td>
                           <td>{% if key.active %}<span class="badge text-bg-success">active</span>{% else %}<span class="badge text-bg-secondary">revoked</span>{% endif %}</td>
                           <td>{{ key.last_used_at or '' }}</td>
