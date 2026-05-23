@@ -46,7 +46,18 @@ set -a
 source "${ENV_FILE}"
 set +a
 
-HOST="${HOST:-127.0.0.1}"
-PORT="${PORT:-8757}"
+strip_cr() {
+  tr -d '\r'
+}
 
-exec "${VENV_DIR}/bin/uvicorn" app.main:app --host "${HOST}" --port "${PORT}" "$@"
+HOST="$(printf '%s' "${HOST:-127.0.0.1}" | strip_cr)"
+PORT="$(printf '%s' "${PORT:-8757}" | strip_cr)"
+BRAINCLAW_SSL_CERTFILE="$(printf '%s' "${BRAINCLAW_SSL_CERTFILE:-}" | strip_cr)"
+BRAINCLAW_SSL_KEYFILE="$(printf '%s' "${BRAINCLAW_SSL_KEYFILE:-}" | strip_cr)"
+
+ssl_args=()
+if [[ -n "${BRAINCLAW_SSL_CERTFILE}" && -n "${BRAINCLAW_SSL_KEYFILE}" ]]; then
+  ssl_args=(--ssl-certfile "${BRAINCLAW_SSL_CERTFILE}" --ssl-keyfile "${BRAINCLAW_SSL_KEYFILE}")
+fi
+
+exec "${VENV_DIR}/bin/uvicorn" app.main:app --host "${HOST}" --port "${PORT}" "${ssl_args[@]}" "$@"

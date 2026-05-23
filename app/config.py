@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     host: str = "127.0.0.1"
     port: int = 8757
     log_level: str = "INFO"
+    log_file: Path = Field(default=BASE_DIR / "data" / "logs" / "brainclaw.jsonl", alias="LOG_FILE")
+    log_max_bytes: int = Field(default=10 * 1024 * 1024, alias="LOG_MAX_BYTES")
+    log_backup_count: int = Field(default=5, alias="LOG_BACKUP_COUNT")
 
     memory_api_key: Optional[str] = Field(default=None, alias="MEMORY_API_KEY")
     allow_missing_api_key: bool = Field(default=False, alias="ALLOW_MISSING_API_KEY")
@@ -88,6 +91,11 @@ class Settings(BaseSettings):
     def validate_upload_dir(cls, value: str | Path) -> Path:
         return _safe_project_path(str(value), "data/uploads")
 
+    @field_validator("log_file", mode="before")
+    @classmethod
+    def validate_log_file(cls, value: str | Path) -> Path:
+        return _safe_project_path(str(value), "data/logs/brainclaw.jsonl")
+
 
 @lru_cache
 def get_settings() -> Settings:
@@ -98,4 +106,5 @@ def get_settings() -> Settings:
     settings.id_map_path.parent.mkdir(parents=True, exist_ok=True)
     settings.index_dir.mkdir(parents=True, exist_ok=True)
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
+    settings.log_file.parent.mkdir(parents=True, exist_ok=True)
     return settings

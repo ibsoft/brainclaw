@@ -1,10 +1,12 @@
 import logging
 import sys
+import time
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Path, Query, UploadFile, status
-from fastapi.responses import JSONResponse
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Path, Query, Request, UploadFile, status
+from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.wsgi import WSGIMiddleware
 
 from app.admin import create_admin_app
@@ -74,11 +76,20 @@ class JsonFormatter(logging.Formatter):
 
 
 def configure_logging(settings: Settings) -> None:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonFormatter())
+    formatter = JsonFormatter()
+    stream_handler = logging.StreamHandler(sys.stdout)
+    stream_handler.setFormatter(formatter)
+    file_handler = RotatingFileHandler(
+        settings.log_file,
+        maxBytes=settings.log_max_bytes,
+        backupCount=settings.log_backup_count,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(formatter)
     root = logging.getLogger()
     root.handlers.clear()
-    root.addHandler(handler)
+    root.addHandler(stream_handler)
+    root.addHandler(file_handler)
     root.setLevel(settings.log_level.upper())
 
 
@@ -99,6 +110,34 @@ memory_service = MemoryService(
 file_service = FileService(settings=settings, db=db, embeddings=embedding_provider, faiss_store=faiss_store)
 
 app = FastAPI(title=settings.app_name, version="1.0.0", docs_url=None, redoc_url=None, openapi_url=None)
+
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        duration_ms = round((time.perf_counter() - start) * 1000, 2)
+        logger.info(
+            "http_request",
+            extra={
+                "method": request.method,
+                "path": request.url.path,
+                "query": request.url.query,
+                "status_code": status_code,
+                "duration_ms": duration_ms,
+                "client": request.client.host if request.client else None,
+            },
+        )
+
+
+@app.get("/", include_in_schema=False)
+def root_redirect() -> RedirectResponse:
+    return RedirectResponse(url="/admin/login", status_code=status.HTTP_302_FOUND)
 
 
 def require_api_key(x_api_key: Annotated[str | None, Header(alias="X-API-Key")] = None) -> Principal:

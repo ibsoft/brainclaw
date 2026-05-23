@@ -68,6 +68,7 @@ BASE_TEMPLATE = """
       <a class="nav-link" href="{{ url_for('ingest') }}"><i class="fa-solid fa-file-circle-plus me-1"></i>Ingest</a>
       <a class="nav-link" href="{{ url_for('query') }}"><i class="fa-solid fa-terminal me-1"></i>SQL Query</a>
       <a class="nav-link" href="{{ url_for('backup_restore') }}"><i class="fa-solid fa-box-archive me-1"></i>Backup</a>
+      <a class="nav-link" href="{{ url_for('logs') }}"><i class="fa-solid fa-scroll me-1"></i>Logs</a>
       <a class="nav-link" href="{{ url_for('api_keys') }}"><i class="fa-solid fa-key me-1"></i>API Keys</a>
     </div>
     <form method="post" action="{{ url_for('logout') }}" class="ms-auto">
@@ -436,6 +437,39 @@ def reset_live_app_data(settings: Any) -> None:
     Path(settings.sqlite_path).parent.mkdir(parents=True, exist_ok=True)
     Path(settings.index_dir).mkdir(parents=True, exist_ok=True)
     Path(settings.upload_dir).mkdir(parents=True, exist_ok=True)
+
+
+def log_file_paths(settings: Any) -> list[Path]:
+    log_file = Path(settings.log_file)
+    paths = [log_file]
+    for index in range(1, int(getattr(settings, "log_backup_count", 0)) + 1):
+        paths.append(log_file.with_name(f"{log_file.name}.{index}"))
+    return [path for path in paths if path.exists() and path.is_file()]
+
+
+def load_log_entries(settings: Any, query: str | None = None, max_entries: int = 20_000) -> list[dict[str, Any]]:
+    needle = (query or "").strip().lower()
+    entries: list[dict[str, Any]] = []
+    for path in log_file_paths(settings):
+        try:
+            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            continue
+        for line in reversed(lines):
+            if needle and needle not in line.lower():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                payload = {"timestamp": "", "level": "ERROR", "logger": path.name, "event": "malformed_log_line", "raw": line}
+            if not isinstance(payload, dict):
+                payload = {"timestamp": "", "level": "ERROR", "logger": path.name, "event": "malformed_log_payload", "raw": line}
+            payload["_file"] = path.name
+            payload["_raw"] = line
+            entries.append(payload)
+            if len(entries) >= max_entries:
+                return entries
+    return entries
 
 
 def validate_username(username: str) -> str:
@@ -941,6 +975,91 @@ def create_admin_app(settings: Any, db: Database, memory_service: MemoryService,
         session.clear()
         flash("BrainClaw was reset. Create a new admin account to continue.", "warning")
         return redirect(url_for("setup"))
+
+    @app.route("/logs", methods=["GET"])
+    @login_required
+    def logs():
+        page = page_param()
+        per_page = per_page_param()
+        query_text = clean_form_text(request.args.get("q"), 256)
+        all_logs = load_log_entries(settings, query_text)
+        logs_page, total, pages = paginate_list(all_logs, page, per_page)
+        return render(
+            "Logs",
+            """
+            <div class="d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3 mb-3">
+              <div>
+                <h1 class="h3 mb-1"><i class="fa-solid fa-scroll me-2 icon-muted"></i>Logs</h1>
+                <div class="text-secondary">JSONL logs with rotation from <span class="secret-box">{{ log_file }}</span></div>
+              </div>
+              <form class="d-flex gap-2" method="get">
+                <input class="form-control" name="q" value="{{ query }}" placeholder="Search logs">
+                <input type="hidden" name="per_page" value="{{ per_page }}">
+                <button class="btn btn-primary"><i class="fa-solid fa-magnifying-glass me-1"></i>Search</button>
+                {% if query %}<a class="btn btn-outline-light" href="{{ url_for('logs', per_page=per_page) }}"><i class="fa-solid fa-xmark me-1"></i>Clear</a>{% endif %}
+              </form>
+            </div>
+            <div class="panel p-3">
+              <div class="d-flex align-items-center justify-content-between mb-2">
+                <div class="text-secondary small">{{ total }} rows · {{ per_page }} rows per page</div>
+                <div class="text-secondary small">Rotation: {{ log_backup_count }} files · {{ log_max_mb }} MB each</div>
+              </div>
+              <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                  <thead><tr><th>Time</th><th>Level</th><th>Logger</th><th>Event</th><th>File</th><th class="text-end">Details</th></tr></thead>
+                  <tbody>
+                  {% for item in logs %}
+                    <tr>
+                      <td class="secret-box small">{{ item.timestamp or '' }}</td>
+                      <td><span class="badge {% if item.level == 'ERROR' or item.level == 'CRITICAL' %}text-bg-danger{% elif item.level == 'WARNING' %}text-bg-warning{% elif item.level == 'INFO' %}text-bg-info{% else %}text-bg-secondary{% endif %}">{{ item.level or '' }}</span></td>
+                      <td class="secret-box small">{{ item.logger or '' }}</td>
+                      <td class="content-cell">{{ item.event or item.message or '' }}</td>
+                      <td class="secret-box small">{{ item._file }}</td>
+                      <td class="text-end">
+                        <button class="btn btn-sm btn-outline-light" type="button" data-bs-toggle="modal" data-bs-target="#logModal{{ loop.index }}"><i class="fa-solid fa-eye me-1"></i>View</button>
+                      </td>
+                    </tr>
+                  {% else %}
+                    <tr><td colspan="6" class="text-center text-secondary py-4">No log rows found.</td></tr>
+                  {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+              <nav class="mt-3">
+                <ul class="pagination mb-0">
+                  <li class="page-item {% if page <= 1 %}disabled{% endif %}"><a class="page-link" href="{{ page_url(page-1) }}">Previous</a></li>
+                  <li class="page-item disabled"><span class="page-link">Page {{ page }} of {{ pages }}</span></li>
+                  <li class="page-item {% if page >= pages %}disabled{% endif %}"><a class="page-link" href="{{ page_url(page+1) }}">Next</a></li>
+                </ul>
+              </nav>
+            </div>
+            {% for item in logs %}
+            <div class="modal fade" id="logModal{{ loop.index }}" tabindex="-1" aria-hidden="true">
+              <div class="modal-dialog modal-xl modal-dialog-centered">
+                <div class="modal-content panel">
+                  <div class="modal-header">
+                    <h5 class="modal-title"><i class="fa-solid fa-scroll me-2 icon-muted"></i>{{ item.event or 'Log entry' }}</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                  </div>
+                  <div class="modal-body">
+                    <pre class="secret-box text-warning bg-dark border rounded p-3 mb-0" style="white-space: pre-wrap; max-height: 65vh; overflow: auto;">{{ item._raw }}</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+            {% endfor %}
+            """,
+            logs=logs_page,
+            total=total,
+            page=page,
+            pages=pages,
+            per_page=per_page,
+            query=query_text,
+            log_file=settings.log_file,
+            log_backup_count=settings.log_backup_count,
+            log_max_mb=settings.log_max_bytes // (1024 * 1024),
+            page_url=lambda p: url_for("logs", page=max(1, p), per_page=per_page, q=query_text),
+        )
 
     @app.route("/query", methods=["GET", "POST"])
     @login_required
