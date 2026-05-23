@@ -590,6 +590,28 @@ reset_installed_brainclaw_data() {
   ok "BrainClaw database, indexes, and uploads reset"
 }
 
+repair_brainclaw_permissions() {
+  step "Repairing BrainClaw install permissions"
+
+  if [[ ! -d "${BRAINCLAW_DIR}" ]]; then
+    fail "BrainClaw install directory not found: ${BRAINCLAW_DIR}"
+  fi
+
+  chown -R "${BRAINCLAW_SERVICE_NAME}:${BRAINCLAW_SERVICE_NAME}" "${BRAINCLAW_DIR}"
+  chmod 0750 "${BRAINCLAW_DIR}"
+  find "${BRAINCLAW_DIR}" -type d -exec chmod u+rwx,g+rx,o-rwx {} + 2>/dev/null || true
+  find "${BRAINCLAW_DIR}" -type f -exec chmod u+rw,g+r,o-rwx {} + 2>/dev/null || true
+
+  if [[ -d "${BRAINCLAW_DIR}/.venv/bin" ]]; then
+    find "${BRAINCLAW_DIR}/.venv/bin" -type f -exec chmod u+rx,g+rx {} + 2>/dev/null || true
+  fi
+  if [[ -f "${BRAINCLAW_DIR}/.env" ]]; then
+    chmod 0640 "${BRAINCLAW_DIR}/.env"
+  fi
+
+  ok "BrainClaw install is readable/executable by ${BRAINCLAW_SERVICE_NAME}"
+}
+
 patch_brainclaw_requirements() {
   step "Patching BrainClaw requirements"
 
@@ -746,7 +768,7 @@ manual_brainclaw_install() {
   install -d -o "${BRAINCLAW_SERVICE_NAME}" -g "${BRAINCLAW_SERVICE_NAME}" -m 0750 "${BRAINCLAW_DIR}"
   install -d -o "${BRAINCLAW_SERVICE_NAME}" -g "${BRAINCLAW_SERVICE_NAME}" -m 0750 "${BRAINCLAW_DIR}/data"
 
-  chown -R "${BRAINCLAW_SERVICE_NAME}:${BRAINCLAW_SERVICE_NAME}" "${BRAINCLAW_DIR}"
+  repair_brainclaw_permissions
 
   sudo -u "${BRAINCLAW_SERVICE_NAME}" -H "${BRAINCLAW_PYTHON_BIN}" -m venv "${BRAINCLAW_DIR}/.venv"
 
@@ -1103,6 +1125,8 @@ repair_service() {
   app_target="$(find_brainclaw_app)"
   ssl_args="$(uvicorn_ssl_args)"
 
+  repair_brainclaw_permissions
+
   step "Repairing BrainClaw systemd service using ${app_target}"
   cat > "/etc/systemd/system/${BRAINCLAW_SERVICE_NAME}.service" <<EOF
 [Unit]
@@ -1148,7 +1172,7 @@ repair_venv() {
 
   step "Rebuilding BrainClaw virtual environment"
   rm -rf "${BRAINCLAW_DIR}/.venv"
-  chown -R "${BRAINCLAW_SERVICE_NAME}:${BRAINCLAW_SERVICE_NAME}" "${BRAINCLAW_DIR}"
+  repair_brainclaw_permissions
   sudo -u "${BRAINCLAW_SERVICE_NAME}" -H "${BRAINCLAW_PYTHON_BIN}" -m venv "${BRAINCLAW_DIR}/.venv"
   sudo -u "${BRAINCLAW_SERVICE_NAME}" -H "${BRAINCLAW_DIR}/.venv/bin/python" -m pip install --upgrade pip setuptools wheel
   sudo -u "${BRAINCLAW_SERVICE_NAME}" -H env \
@@ -1177,6 +1201,7 @@ Usage:
   sudo ./setup.sh uninstall
   sudo ./setup.sh repair-service
   sudo ./setup.sh repair-venv
+  sudo ./setup.sh repair-permissions
 
 Install is the default command.
 
@@ -1243,6 +1268,10 @@ main() {
     repair-venv)
       shift || true
       repair_venv "$@"
+      ;;
+    repair-permissions)
+      shift || true
+      repair_brainclaw_permissions "$@"
       ;;
     -h|--help|help)
       usage
