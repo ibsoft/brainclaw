@@ -1,0 +1,4 @@
+name: brainclaw
+version: 0.1.0
+description: "HTTP-only BrainClaw memory provider for the Hermes agent."
+hooks: []
