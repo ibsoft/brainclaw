@@ -6,6 +6,7 @@ from logging.handlers import RotatingFileHandler
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Path, Query, Request, UploadFile, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from starlette.middleware.wsgi import WSGIMiddleware
 
@@ -19,14 +20,14 @@ from app.memory_service import MemoryService, redact_for_log
 from app.security import Principal, require_scope, verify_api_key
 from app.schemas import (
     FileSearchRequest,
-    FileSearchResult,
+    FileSearchResponse,
     FileUploadResponse,
     HealthResponse,
     MemoryAddRequest,
     MemoryDeleteRequest,
-    MemoryResponse,
+    MemoryGetResponse,
     MemorySearchRequest,
-    MemorySearchResult,
+    MemorySearchResponse,
     MemoryUpdateRequest,
     StatusResponse,
 )
@@ -158,6 +159,7 @@ Auth = Depends(require_api_key)
 def health(_: Annotated[Principal, Auth]) -> HealthResponse:
     return HealthResponse(
         status="ok",
+        ok=True,
         app=settings.app_name,
         index_vectors=faiss_store.vector_count,
         sqlite_path=str(settings.sqlite_path),
@@ -172,10 +174,11 @@ def add_memory(request: MemoryAddRequest, principal: Annotated[Principal, Auth])
     return StatusResponse(**memory_service.add_memory(request))
 
 
-@app.post("/memory/search", response_model=list[MemorySearchResult])
-def search_memory(request: MemorySearchRequest, principal: Annotated[Principal, Auth]) -> list[dict]:
+@app.post("/memory/search", response_model=MemorySearchResponse)
+def search_memory(request: MemorySearchRequest, principal: Annotated[Principal, Auth]) -> dict:
     require_scope(principal, request.agent_id, request.workspace)
-    return memory_service.search_memory(request)
+    results = memory_service.search_memory(request)
+    return {"status": "success", "ok": True, "count": len(results), "results": results}
 
 
 @app.post("/memory/delete", response_model=StatusResponse)
@@ -190,7 +193,7 @@ def update_memory(request: MemoryUpdateRequest, principal: Annotated[Principal, 
     return StatusResponse(**memory_service.update_memory(request))
 
 
-@app.get("/memory/{id}", response_model=MemoryResponse)
+@app.get("/memory/{id}", response_model=MemoryGetResponse)
 def get_memory(
     id: Annotated[int, Path(gt=0)],
     agent_id: Annotated[str, Query(min_length=1, max_length=128)],
@@ -198,7 +201,7 @@ def get_memory(
     principal: Annotated[Principal, Auth],
 ) -> dict:
     require_scope(principal, agent_id, workspace)
-    return memory_service.get_memory(id, agent_id, workspace)
+    return {"status": "success", "ok": True, "memory": memory_service.get_memory(id, agent_id, workspace)}
 
 
 @app.post("/memory/rebuild-index", response_model=StatusResponse)
@@ -221,10 +224,11 @@ async def upload_file(
     return FileUploadResponse(**await file_service.upload_file(agent_id, workspace, source, tags, file))
 
 
-@app.post("/files/search", response_model=list[FileSearchResult])
-def search_files(request: FileSearchRequest, principal: Annotated[Principal, Auth]) -> list[dict]:
+@app.post("/files/search", response_model=FileSearchResponse)
+def search_files(request: FileSearchRequest, principal: Annotated[Principal, Auth]) -> dict:
     require_scope(principal, request.agent_id, request.workspace)
-    return file_service.search_files(request)
+    results = file_service.search_files(request)
+    return {"status": "success", "ok": True, "count": len(results), "results": results}
 
 
 @app.delete("/files/{file_id}", response_model=StatusResponse)
@@ -248,10 +252,37 @@ def reindex_files(principal: Annotated[Principal, Auth]) -> StatusResponse:
 app.mount("/admin", WSGIMiddleware(create_admin_app(settings, db, memory_service, file_service, faiss_store)))
 
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "status": "failure",
+            "ok": False,
+            "message": exc.detail if isinstance(exc.detail, str) else "request failed",
+            "details": exc.detail if not isinstance(exc.detail, str) else {},
+        },
+        headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(_, exc: RequestValidationError):
+    return JSONResponse(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        content={
+            "status": "failure",
+            "ok": False,
+            "message": "validation failed",
+            "details": {"errors": exc.errors()},
+        },
+    )
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(_, exc: Exception):
     logger.exception("unhandled_exception", extra={"error": redact_for_log(str(exc))})
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content={"detail": "internal server error"},
+        content={"status": "failure", "ok": False, "message": "internal server error", "details": {}},
     )

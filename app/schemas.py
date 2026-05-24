@@ -209,6 +209,7 @@ class FileSearchRequest(BaseModel):
 
 
 class FileUploadResponse(BaseModel):
+    status: str = "success"
     ok: bool
     file_id: int
     message: str
@@ -237,6 +238,7 @@ class FileSearchResult(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+    ok: bool = True
     app: str
     index_vectors: int
     sqlite_path: str
@@ -245,7 +247,28 @@ class HealthResponse(BaseModel):
 
 
 class StatusResponse(BaseModel):
+    status: str = "success"
     ok: bool
     id: Optional[int] = None
     message: str
     details: dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryGetResponse(BaseModel):
+    status: str = "success"
+    ok: bool = True
+    memory: MemoryResponse
+
+
+class MemorySearchResponse(BaseModel):
+    status: str = "success"
+    ok: bool = True
+    count: int
+    results: list[MemorySearchResult]
+
+
+class FileSearchResponse(BaseModel):
+    status: str = "success"
+    ok: bool = True
+    count: int
+    results: list[FileSearchResult]

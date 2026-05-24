@@ -278,6 +278,29 @@ All endpoints require:
 X-API-Key: your-memory-api-key
 ```
 
+API responses use a consistent JSON status envelope. Successful write/delete/reindex/upload actions include:
+
+```json
+{
+  "status": "success",
+  "ok": true,
+  "message": "memory added"
+}
+```
+
+Search responses include `status`, `ok`, `count`, and `results`. Failed requests return:
+
+```json
+{
+  "status": "failure",
+  "ok": false,
+  "message": "API key is not allowed for this agent/workspace",
+  "details": {}
+}
+```
+
+When debugging manually, avoid `curl -f` if you want to see the JSON error body.
+
 For manual testing, export the key:
 
 ```bash
