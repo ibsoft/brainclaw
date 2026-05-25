@@ -37,6 +37,13 @@ BASE_TEMPLATE = """
   <style>
     body { background: #111827; }
     .navbar, .panel { background: #172033; border: 1px solid #273449; }
+    .navbar { border-width: 0 0 1px; }
+    .navbar-brand { min-width: 0; }
+    .navbar-toggler { border-color: #3b4a63; }
+    .navbar-toggler:focus { box-shadow: 0 0 0 .15rem rgba(139, 180, 255, .35); }
+    .navbar-collapse { min-width: 0; }
+    .navbar-nav .nav-link { border-radius: .375rem; padding-inline: .65rem; }
+    .navbar-nav .nav-link:hover, .navbar-nav .nav-link:focus { background: rgba(139, 180, 255, .12); }
     .panel { border-radius: .5rem; }
     .table { --bs-table-bg: transparent; }
     .content-cell { max-width: 520px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -105,6 +112,18 @@ BASE_TEMPLATE = """
     footer { color: #c7d2fe; border-top: 1px solid #273449; background: linear-gradient(90deg, #121b2d, #172033 45%, #13251f); }
     .footer-pill { border: 1px solid #334155; border-radius: 999px; padding: .35rem .75rem; background: rgba(15, 23, 42, .55); }
     .icon-muted { color: #8bb4ff; }
+    @media (max-width: 991.98px) {
+      .navbar .container-fluid { align-items: center; }
+      .navbar-collapse {
+        margin-top: .75rem; padding-top: .75rem;
+        border-top: 1px solid #273449;
+      }
+      .navbar-nav { gap: .15rem; }
+      .navbar-nav .nav-link { padding-block: .65rem; }
+      .navbar .btn { width: 100%; justify-content: center; }
+      main.container-fluid { padding-inline: .75rem; }
+      footer.container-fluid { padding-inline: .75rem; }
+    }
   </style>
 </head>
 <body class="min-vh-100 d-flex flex-column">
@@ -112,19 +131,24 @@ BASE_TEMPLATE = """
 <nav class="navbar navbar-expand-lg navbar-dark sticky-top">
   <div class="container-fluid">
     <a class="navbar-brand fw-semibold" href="{{ url_for('dashboard') }}"><i class="fa-solid fa-brain me-2 icon-muted"></i>BrainClaw Admin</a>
-    <div class="navbar-nav">
-      <a class="nav-link" href="{{ url_for('dashboard') }}"><i class="fa-solid fa-robot me-1"></i>Agents</a>
-      <a class="nav-link" href="{{ url_for('memories') }}"><i class="fa-solid fa-layer-group me-1"></i>Memories</a>
-      <a class="nav-link" href="{{ url_for('ingest') }}"><i class="fa-solid fa-file-circle-plus me-1"></i>Ingest</a>
-      <a class="nav-link" href="{{ url_for('query') }}"><i class="fa-solid fa-terminal me-1"></i>SQL Query</a>
-      <a class="nav-link" href="{{ url_for('backup_restore') }}"><i class="fa-solid fa-box-archive me-1"></i>Backup</a>
-      <a class="nav-link" href="{{ url_for('logs') }}"><i class="fa-solid fa-scroll me-1"></i>Logs</a>
-      <a class="nav-link" href="{{ url_for('api_keys') }}"><i class="fa-solid fa-key me-1"></i>API Keys</a>
+    <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#adminNavbar" aria-controls="adminNavbar" aria-expanded="false" aria-label="Toggle navigation">
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="adminNavbar">
+      <div class="navbar-nav me-lg-auto">
+        <a class="nav-link" href="{{ url_for('dashboard') }}"><i class="fa-solid fa-robot me-1"></i>Agents</a>
+        <a class="nav-link" href="{{ url_for('memories') }}"><i class="fa-solid fa-layer-group me-1"></i>Memories</a>
+        <a class="nav-link" href="{{ url_for('ingest') }}"><i class="fa-solid fa-file-circle-plus me-1"></i>Ingest</a>
+        <a class="nav-link" href="{{ url_for('query') }}"><i class="fa-solid fa-terminal me-1"></i>SQL Query</a>
+        <a class="nav-link" href="{{ url_for('backup_restore') }}"><i class="fa-solid fa-box-archive me-1"></i>Backup</a>
+        <a class="nav-link" href="{{ url_for('logs') }}"><i class="fa-solid fa-scroll me-1"></i>Logs</a>
+        <a class="nav-link" href="{{ url_for('api_keys') }}"><i class="fa-solid fa-key me-1"></i>API Keys</a>
+      </div>
+      <form method="post" action="{{ url_for('logout') }}" class="ms-lg-auto mt-3 mt-lg-0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        <button class="btn btn-sm btn-outline-light d-inline-flex align-items-center"><i class="fa-solid fa-right-from-bracket me-1"></i>Sign out</button>
+      </form>
     </div>
-    <form method="post" action="{{ url_for('logout') }}" class="ms-auto">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-      <button class="btn btn-sm btn-outline-light"><i class="fa-solid fa-right-from-bracket me-1"></i>Sign out</button>
-    </form>
   </div>
 </nav>
 {% endif %}

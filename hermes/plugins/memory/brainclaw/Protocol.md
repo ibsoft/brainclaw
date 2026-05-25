@@ -139,7 +139,7 @@ Every memory request includes:
 }
 ```
 
-BrainClaw isolates API keys and indexes by `agent_id` and `workspace`. If an API key is scoped to `openclaw/default`, requests for `CyberPhylax-7/CyberPhylax-Workspace` will fail with HTTP 403.
+BrainClaw isolates API keys and indexes by `agent_id` and `workspace`. 
 
 Recommended Hermes scope:
 
